@@ -1,16 +1,83 @@
-# React + Vite
+# Store Optimizer (Store Map Builder)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A React + Vite app for **drawing a store layout** (aisles/shelves, zones, walls) and **generating an optimized pick path** from a start point to an end point.
 
-Currently, two official plugins are available:
+The optimizer runs in a **Web Worker** and uses grid-based routing (A\*) plus tour-improvement heuristics (nearest-neighbour, 2-opt, Or-opt, 3-opt, simulated annealing). Maps can be saved/loaded as JSON and exported as TXT/CSV pick lists.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+### Features
 
-## React Compiler
+- **Interactive map builder**: draw shelves, zones, and walls on a 200×200 grid
+- **Start/End markers**: drag “S” and “E” markers to define the route endpoints
+- **Route optimization**: computes an efficient walk path that visits every pick node
+- **Temperature passes**: picks are grouped by zone pass order (Ambient → Chilled → Frozen → Action Alley)
+- **Save/Load**: export/import a `store-map.json` file; also persists to `localStorage`
+- **Export pick path**: download `pick-path.txt` or `pick-path.csv`
+- **Trace image**: overlay a floor-plan image with adjustable opacity for drawing alignment
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### Controls (quick reference)
 
-## Expanding the ESLint configuration
+- **Draw / Select / Erase**: use the mode buttons in the header
+- **Place items**: click + drag on the map in **Draw** mode
+- **Pan**: hold **Space** and drag, or **right-click** drag (middle mouse also works)
+- **Zoom**: mouse wheel (or header zoom buttons)
+- **Move Start/End**: drag the **S**/**E** markers
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### Getting started
+
+#### Prerequisites
+
+- **Node.js** (recommended: current LTS)
+- npm (comes with Node)
+
+#### Install
+
+```bash
+npm install
+```
+
+#### Run (dev)
+
+```bash
+npm run dev
+```
+
+Then open the URL shown in your terminal (Vite typically uses `http://localhost:5173`).
+
+#### Build / preview
+
+```bash
+npm run build
+npm run preview
+```
+
+### Testing
+
+This repo uses **Jest** for unit tests (see `src/pathBuilder.test.js`).
+
+```bash
+npm test
+```
+
+### Project structure
+
+- `src/App.jsx`: main UI (map builder, controls, exports)
+- `src/drawCanvas.js`: canvas renderer (grid, items, walls, route overlay)
+- `src/optimizer.worker.js`: background route optimization worker
+- `src/pathBuilder.js`: pick-node generation + optimizer pipeline
+- `src/routing.js`: A\* pathfinding + blocked cells + wall edge constraints
+- `src/constants.js`: grid size, item types, temperature zones
+
+### Data model (map JSON)
+
+The saved `store-map.json` contains:
+
+- **`items`**: shelves + zones (position, size, dept/num/label, sections, temp zone, etc.)
+- **`walls`**: wall segments that the route cannot cross
+- **`START` / `END`**: route endpoints
+- **`bgImage`** (optional): trace-image data URL + placement/scale
+
+### Notes / troubleshooting
+
+- **Performance**: very large numbers of sections increase optimization time (each section becomes a pick node).
+- **Walls**: the route will not cross walls; if you see odd detours, check for accidental wall segments.
+- **Reset state**: the app persists maps in `localStorage`. Use the in-app **Clear** button (or clear site data) to reset.
