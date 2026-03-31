@@ -412,6 +412,29 @@ export default function StoreMapBuilder() {
       : setPreviewRect(normRect(dragStart.c,dragStart.r,getCell(e).c,getCell(e).r));
   }, [drawing, dragStart, draggingMarker, drawTool, getCell, getEdge, mode, items]);
 
+  // ── Pick side helpers ───────────────────────────────────────────────────────
+  const validPickSides  = (isV, isQ) => isQ?["top","bottom","left","right"]:isV?["left","right"]:["top","bottom"];
+  const defaultPickSide = (isV, isQ) => isQ?"right":isV?"right":"bottom";
+  const oppositeSide    = { left:"right", right:"left", top:"bottom", bottom:"top" };
+
+  const resolvePickSide = useCallback((shelf, side, allItems) => {
+    const others = allItems.filter(it => it.type==="shelf" && it.id!==shelf.id);
+    const collides = (c,r) => others.some(o=>c>=o.c&&c<o.c+o.w&&r>=o.r&&r<o.r+o.h);
+    const N=Math.max(1,shelf.sections||1), isV=shelf.h>shelf.w;
+    const check = (s) => {
+      for (let sec=1;sec<=N;sec++) {
+        const nc=isV?(s==="left"?shelf.c-1:shelf.c+shelf.w):Math.round(shelf.c+(sec-0.5)*shelf.w/N);
+        const nr=isV?Math.round(shelf.r+(sec-0.5)*shelf.h/N):(s==="top"?shelf.r-1:shelf.r+shelf.h);
+        if (collides(nc,nr)) return false;
+      }
+      return true;
+    };
+    if (check(side)) return side;
+    const alt=oppositeSide[side];
+    if (alt&&check(alt)) return alt;
+    return side;
+  }, []);
+
   const onMouseUp = useCallback((e) => {
     if (isPanningRef.current) { isPanningRef.current=false; return; }
     if (draggingMarker) { setDraggingMarker(null); return; }
@@ -419,13 +442,11 @@ export default function StoreMapBuilder() {
     // Commit item drag
     if (mode==="select" && draggingItemRef.current) {
       if (dragItemPreview) {
-        // A real drag happened — move the item
         const { id } = draggingItemRef.current;
         pushUndo(items, walls);
         setItems(prev => prev.map(it => {
           if (it.id !== id) return it;
           const moved = { ...it, c: dragItemPreview.c, r: dragItemPreview.r };
-          // Recalc entrance and pick side after move
           if (it.type !== "zone") Object.assign(moved, calcEntrance(moved.c, moved.r, moved.w, moved.h, moved.orient));
           if (it.type === "shelf") {
             const isV = moved.h > moved.w, isQ = moved.h === moved.w;
@@ -437,7 +458,6 @@ export default function StoreMapBuilder() {
         }));
         setDragItemPreview(null);
       }
-      // else: was a plain click — selection already set in mouseDown
       draggingItemRef.current = null;
       mouseDownCellRef.current = null;
       return;
@@ -487,29 +507,6 @@ export default function StoreMapBuilder() {
     draggingItemRef.current = null;
     mouseDownCellRef.current = null;
     setDragItemPreview(null);
-  }, []);
-
-  // ── Pick side helpers ───────────────────────────────────────────────────────
-  const validPickSides  = (isV, isQ) => isQ?["top","bottom","left","right"]:isV?["left","right"]:["top","bottom"];
-  const defaultPickSide = (isV, isQ) => isQ?"right":isV?"right":"bottom";
-  const oppositeSide    = { left:"right", right:"left", top:"bottom", bottom:"top" };
-
-  const resolvePickSide = useCallback((shelf, side, allItems) => {
-    const others = allItems.filter(it => it.type==="shelf" && it.id!==shelf.id);
-    const collides = (c,r) => others.some(o=>c>=o.c&&c<o.c+o.w&&r>=o.r&&r<o.r+o.h);
-    const N=Math.max(1,shelf.sections||1), isV=shelf.h>shelf.w;
-    const check = (s) => {
-      for (let sec=1;sec<=N;sec++) {
-        const nc=isV?(s==="left"?shelf.c-1:shelf.c+shelf.w):Math.round(shelf.c+(sec-0.5)*shelf.w/N);
-        const nr=isV?Math.round(shelf.r+(sec-0.5)*shelf.h/N):(s==="top"?shelf.r-1:shelf.r+shelf.h);
-        if (collides(nc,nr)) return false;
-      }
-      return true;
-    };
-    if (check(side)) return side;
-    const alt=oppositeSide[side];
-    if (alt&&check(alt)) return alt;
-    return side;
   }, []);
 
   const recheckCollisions = useCallback(() => {
