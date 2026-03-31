@@ -7,6 +7,18 @@ import { drawCanvas, drawOverlayCanvas } from "./drawCanvas.js";
 const MAX_UNDO = 40;
 const WORKER_TIMEOUT_MS = 60_000; // 60 s hard limit
 
+// ── Responsive breakpoint hook ────────────────────────────────────────────────
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 // ── Tiny helpers ──────────────────────────────────────────────────────────────
 function safeLocalStorageSet(key, value) {
   try {
@@ -30,6 +42,10 @@ export default function StoreMapBuilder() {
   const mapContainerRef   = useRef(null);
   const loadFileRef       = useRef(null);
   const bgFileRef         = useRef(null);
+
+  // ── Responsive layout ───────────────────────────────────────────────────────
+  const isMobile = useIsMobile();
+  const [sheetOpen, setSheetOpen] = useState(false); // mobile bottom sheet
 
   // ── Core map state ──────────────────────────────────────────────────────────
   const [items,     setItems]     = useState([]);
@@ -732,162 +748,9 @@ export default function StoreMapBuilder() {
     setPan({x:(cw-(maxC-minC)*CELL*fitZ)/2-minC*CELL*fitZ,y:(ch-(maxR-minR)*CELL*fitZ)/2-minR*CELL*fitZ});
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
-  return (
-    <div style={{height:"100vh",background:DARK,color:CREAM,fontFamily:SANS,
-      display:"flex",flexDirection:"column",overflow:"hidden"}}>
-
-      {/* ══ TOAST NOTIFICATIONS ══ */}
-      <div style={{position:"fixed",top:60,right:16,zIndex:9999,
-        display:"flex",flexDirection:"column",gap:8,maxWidth:400,pointerEvents:"none"}}>
-        {toasts.map(t => (
-          <div key={t.id} style={{
-            padding:"10px 14px", borderRadius:8, fontFamily:MONO, fontSize:"0.78rem",
-            lineHeight:1.6, pointerEvents:"auto",
-            background: t.type==="error" ? "#1a0a0a" : "#1a1400",
-            border: `1px solid ${t.type==="error" ? "#f43f5e88" : "#F1C50088"}`,
-            color: t.type==="error" ? "#f87171" : GOLD,
-            boxShadow:"0 4px 24px rgba(0,0,0,0.5)",
-            animation:"slideIn 0.2s ease",
-          }}>
-            {t.msg}
-          </div>
-        ))}
-      </div>
-      <style>{`@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}`}</style>
-
-      {/* ══ HEADER ══ */}
-      <header style={{
-        position:"relative",zIndex:100,flexShrink:0,
-        background:"rgba(26,15,10,0.92)",backdropFilter:"blur(16px)",
-        borderBottom:`1px solid ${BORDER}`,
-        padding:"0.6rem 1.25rem",
-        display:"flex",alignItems:"center",gap:"0.6rem"
-      }}>
-        {/* Logo */}
-        <div style={{marginRight:"0.75rem",flexShrink:0}}>
-          <div style={{fontFamily:SERIF,fontSize:"1.1rem",fontWeight:900,color:GOLD,letterSpacing:"-0.02em",lineHeight:1.1}}>
-            Store Map Builder
-          </div>
-          <div style={{fontFamily:MONO,fontSize:"0.6rem",color:GOLD_DIM,letterSpacing:"0.2em",textTransform:"uppercase"}}>
-            Aisles · Routing · Optimization
-          </div>
-        </div>
-
-        <div style={{width:1,height:28,background:BORDER,flexShrink:0,margin:"0 0.25rem"}}/>
-
-        {/* Mode pills with keyboard hint */}
-        {[["draw","✏ Draw","D"],["select","↖ Select","S"],["erase","⌫ Erase","E"]].map(([m,label,key])=>(
-          <button key={m} onClick={()=>setMode(m)} title={`${label} (${key})`} style={{
-            padding:"0.3rem 0.75rem", borderRadius:100, cursor:"pointer",
-            fontFamily:MONO, fontSize:"0.72rem", fontWeight:500,
-            letterSpacing:"0.08em", textTransform:"uppercase", transition:"all 0.2s",
-            background: mode===m ? modeCol[m]+"22" : "transparent",
-            border: `1px solid ${mode===m ? modeCol[m] : BORDER}`,
-            color: mode===m ? modeCol[m] : MUTED,
-          }}>
-            {label}
-            <span style={{marginLeft:5,fontSize:"0.6rem",opacity:0.5,fontWeight:400}}>[{key}]</span>
-          </button>
-        ))}
-
-        {/* Zoom cluster */}
-        <div style={{display:"flex",alignItems:"center",gap:2,
-          background:"rgba(255,255,255,0.03)",border:`1px solid ${BORDER}`,
-          borderRadius:8,padding:"2px 6px",marginLeft:"0.25rem"}}>
-          <button onClick={()=>setZoom(z=>parseFloat(Math.max(0.1,z/1.25).toFixed(3)))}
-            style={{background:"none",border:"none",color:GOLD,cursor:"pointer",fontSize:"1.1rem",fontWeight:700,lineHeight:1,padding:"0 4px"}}>−</button>
-          <span style={{fontFamily:MONO,fontSize:"0.7rem",color:GOLD,minWidth:36,textAlign:"center"}}>{Math.round(zoom*100)}%</span>
-          <button onClick={()=>setZoom(z=>parseFloat(Math.min(8,z*1.25).toFixed(3)))}
-            style={{background:"none",border:"none",color:GOLD,cursor:"pointer",fontSize:"1.1rem",fontWeight:700,lineHeight:1,padding:"0 4px"}}>+</button>
-          <div style={{width:1,height:14,background:BORDER,margin:"0 3px"}}/>
-          <button onClick={()=>{setZoom(1);setPan({x:0,y:0});}}
-            style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.65rem",padding:"0 3px"}}>1:1</button>
-          <button onClick={fitView}
-            style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.65rem",padding:"0 3px"}}>FIT</button>
-        </div>
-
-        {/* Undo / Redo */}
-        <div style={{display:"flex",gap:2}}>
-          {[["↩","Undo (Ctrl+Z)",undo,undoStack.current.length===0],
-            ["↪","Redo (Ctrl+Y)",redo,redoStack.current.length===0]].map(([icon,title,fn,disabled])=>(
-            <button key={icon} onClick={fn} title={title} disabled={disabled} style={{
-              padding:"0.3rem 0.6rem",borderRadius:6,cursor:disabled?"not-allowed":"pointer",
-              background:"transparent",border:`1px solid ${BORDER}`,
-              color:disabled?MUTED:CREAM,fontFamily:MONO,fontSize:"0.85rem",opacity:disabled?0.4:1,transition:"all 0.2s"
-            }}>{icon}</button>
-          ))}
-        </div>
-
-        {/* Right-side actions */}
-        <div style={{marginLeft:"auto",display:"flex",gap:"0.4rem",alignItems:"center"}}>
-          <span style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED,marginRight:4}}>
-            {items.filter(it=>it.type!=="zone").length} items
-          </span>
-
-          <button onClick={()=>setShowRoute(r=>!r)} style={{
-            padding:"0.3rem 0.75rem",borderRadius:100,cursor:"pointer",
-            fontFamily:MONO,fontSize:"0.72rem",fontWeight:500,letterSpacing:"0.06em",transition:"all 0.2s",
-            background: showRoute ? GOLD+"22":"transparent",
-            border: `1px solid ${showRoute ? GOLD : BORDER}`,
-            color: showRoute ? GOLD : MUTED,
-          }}>{showRoute?"● Path":"○ Path"}</button>
-
-          <button onClick={runRoute} disabled={optimizing} style={{
-            padding:"0.35rem 1rem",borderRadius:6,cursor:optimizing?"not-allowed":"pointer",
-            fontFamily:SANS,fontSize:"0.82rem",fontWeight:700,letterSpacing:"0.03em",transition:"all 0.2s",
-            background: optimizing ? "transparent" : GOLD,
-            border: `1px solid ${optimizing ? BORDER : GOLD}`,
-            color: optimizing ? MUTED : DARK,
-          }}>{optimizing?"⏳ Running…":"▶ Optimize"}</button>
-
-          <div style={{width:1,height:20,background:BORDER}}/>
-
-          {[
-            ["⟳ Collide", recheckCollisions, GOLD, "Re-check pick-node collisions"],
-            ["💾 Save",    saveMap,            CREAM, ""],
-          ].map(([label,fn,col,title])=>(
-            <button key={label} onClick={fn} title={title} style={{
-              padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
-              fontFamily:MONO,fontSize:"0.7rem",fontWeight:500,letterSpacing:"0.04em",transition:"all 0.2s",
-              background:"transparent",border:`1px solid ${BORDER}`,color:col,
-            }}>{label}</button>
-          ))}
-          <button onClick={()=>loadFileRef.current?.click()} style={{
-            padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
-            fontFamily:MONO,fontSize:"0.7rem",fontWeight:500,letterSpacing:"0.04em",transition:"all 0.2s",
-            background:"transparent",border:`1px solid ${BORDER}`,color:CREAM,
-          }}>📂 Load</button>
-          <input ref={loadFileRef} type="file" accept=".json" onChange={loadMap} style={{display:"none"}} />
-          <button onClick={()=>{if(window.confirm("Clear everything?")){
-            pushUndo(items,walls);
-            setItems([]);setWalls([]);setSelectedId(null);}}}
-            style={{padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
-              background:"transparent",border:`1px solid ${"#f43f5e44"}`,color:"#f43f5e88"}}>Clear</button>
-        </div>
-      </header>
-
-      {/* ══ BODY ══ */}
-      <div style={{flex:1,display:"flex",overflow:"hidden"}}>
-
-        {/* ══ SIDE PANEL ══ */}
-        <aside style={{
-          width:244,flexShrink:0,
-          background:"#160C08",
-          borderRight:`1px solid ${BORDER}`,
-          display:"flex",flexDirection:"column",overflow:"hidden",
-        }}>
-          <div style={{display:"flex",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
-            {[["draw","Draw"],["edit","Edit"],["route","Route"]].map(([id,label])=>(
-              <button key={id} onClick={()=>setPanelTab(id)} style={tab(panelTab===id)}>{label}</button>
-            ))}
-          </div>
-
-          <div style={{flex:1,overflowY:"auto",padding:"1rem 0.875rem",
-            scrollbarWidth:"thin",scrollbarColor:`${GOLD_DIM} transparent`}}>
-
-            {/* ─── DRAW TAB ─── */}
-            {panelTab==="draw"&&(
+  // ── Panel content (shared between desktop aside and mobile bottom sheet) ────
+  const renderPanelContent = () => (
+    <>
               <div style={{display:"flex",flexDirection:"column",gap:"0.9rem"}}>
                 <div>
                   {lbl("Item Type")}
@@ -1411,10 +1274,241 @@ export default function StoreMapBuilder() {
             )}
 
           </div>
-        </aside>
+    </>
+  );
 
-        {/* ══ CANVAS ══ */}
-        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+  // ── Render ────────────────────────────────────────────────────────────────
+  return (
+    <div style={{height:"100vh",background:DARK,color:CREAM,fontFamily:SANS,
+      display:"flex",flexDirection:"column",overflow:"hidden"}}>
+
+      {/* ══ TOAST NOTIFICATIONS ══ */}
+      <div style={{position:"fixed",top:60,right:16,zIndex:9999,
+        display:"flex",flexDirection:"column",gap:8,maxWidth: isMobile ? "calc(100vw - 32px)" : 400,pointerEvents:"none"}}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            padding:"10px 14px", borderRadius:8, fontFamily:MONO, fontSize:"0.78rem",
+            lineHeight:1.6, pointerEvents:"auto",
+            background: t.type==="error" ? "#1a0a0a" : "#1a1400",
+            border: `1px solid ${t.type==="error" ? "#f43f5e88" : "#F1C50088"}`,
+            color: t.type==="error" ? "#f87171" : GOLD,
+            boxShadow:"0 4px 24px rgba(0,0,0,0.5)",
+            animation:"slideIn 0.2s ease",
+          }}>
+            {t.msg}
+          </div>
+        ))}
+      </div>
+      <style>{`
+        @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+        @keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+        * { -webkit-tap-highlight-color: transparent; }
+      `}</style>
+
+      {/* ══ HEADER — DESKTOP ══ */}
+      {!isMobile && (
+        <header style={{
+          position:"relative",zIndex:100,flexShrink:0,
+          background:"rgba(26,15,10,0.92)",backdropFilter:"blur(16px)",
+          borderBottom:`1px solid ${BORDER}`,
+          padding:"0.6rem 1.25rem",
+          display:"flex",alignItems:"center",gap:"0.6rem"
+        }}>
+          {/* Logo */}
+          <div style={{marginRight:"0.75rem",flexShrink:0}}>
+            <div style={{fontFamily:SERIF,fontSize:"1.1rem",fontWeight:900,color:GOLD,letterSpacing:"-0.02em",lineHeight:1.1}}>
+              Store Map Builder
+            </div>
+            <div style={{fontFamily:MONO,fontSize:"0.6rem",color:GOLD_DIM,letterSpacing:"0.2em",textTransform:"uppercase"}}>
+              Aisles · Routing · Optimization
+            </div>
+          </div>
+
+          <div style={{width:1,height:28,background:BORDER,flexShrink:0,margin:"0 0.25rem"}}/>
+
+          {[["draw","✏ Draw","D"],["select","↖ Select","S"],["erase","⌫ Erase","E"]].map(([m,label,key])=>(
+            <button key={m} onClick={()=>setMode(m)} title={`${label} (${key})`} style={{
+              padding:"0.3rem 0.75rem", borderRadius:100, cursor:"pointer",
+              fontFamily:MONO, fontSize:"0.72rem", fontWeight:500,
+              letterSpacing:"0.08em", textTransform:"uppercase", transition:"all 0.2s",
+              background: mode===m ? modeCol[m]+"22" : "transparent",
+              border: `1px solid ${mode===m ? modeCol[m] : BORDER}`,
+              color: mode===m ? modeCol[m] : MUTED,
+            }}>
+              {label}
+              <span style={{marginLeft:5,fontSize:"0.6rem",opacity:0.5,fontWeight:400}}>[{key}]</span>
+            </button>
+          ))}
+
+          <div style={{display:"flex",alignItems:"center",gap:2,
+            background:"rgba(255,255,255,0.03)",border:`1px solid ${BORDER}`,
+            borderRadius:8,padding:"2px 6px",marginLeft:"0.25rem"}}>
+            <button onClick={()=>setZoom(z=>parseFloat(Math.max(0.1,z/1.25).toFixed(3)))}
+              style={{background:"none",border:"none",color:GOLD,cursor:"pointer",fontSize:"1.1rem",fontWeight:700,lineHeight:1,padding:"0 4px"}}>−</button>
+            <span style={{fontFamily:MONO,fontSize:"0.7rem",color:GOLD,minWidth:36,textAlign:"center"}}>{Math.round(zoom*100)}%</span>
+            <button onClick={()=>setZoom(z=>parseFloat(Math.min(8,z*1.25).toFixed(3)))}
+              style={{background:"none",border:"none",color:GOLD,cursor:"pointer",fontSize:"1.1rem",fontWeight:700,lineHeight:1,padding:"0 4px"}}>+</button>
+            <div style={{width:1,height:14,background:BORDER,margin:"0 3px"}}/>
+            <button onClick={()=>{setZoom(1);setPan({x:0,y:0});}}
+              style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.65rem",padding:"0 3px"}}>1:1</button>
+            <button onClick={fitView}
+              style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.65rem",padding:"0 3px"}}>FIT</button>
+          </div>
+
+          <div style={{display:"flex",gap:2}}>
+            {[["↩","Undo (Ctrl+Z)",undo,undoStack.current.length===0],
+              ["↪","Redo (Ctrl+Y)",redo,redoStack.current.length===0]].map(([icon,title,fn,disabled])=>(
+              <button key={icon} onClick={fn} title={title} disabled={disabled} style={{
+                padding:"0.3rem 0.6rem",borderRadius:6,cursor:disabled?"not-allowed":"pointer",
+                background:"transparent",border:`1px solid ${BORDER}`,
+                color:disabled?MUTED:CREAM,fontFamily:MONO,fontSize:"0.85rem",opacity:disabled?0.4:1,transition:"all 0.2s"
+              }}>{icon}</button>
+            ))}
+          </div>
+
+          <div style={{marginLeft:"auto",display:"flex",gap:"0.4rem",alignItems:"center"}}>
+            <span style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED,marginRight:4}}>
+              {items.filter(it=>it.type!=="zone").length} items
+            </span>
+            <button onClick={()=>setShowRoute(r=>!r)} style={{
+              padding:"0.3rem 0.75rem",borderRadius:100,cursor:"pointer",
+              fontFamily:MONO,fontSize:"0.72rem",fontWeight:500,letterSpacing:"0.06em",transition:"all 0.2s",
+              background: showRoute ? GOLD+"22":"transparent",
+              border: `1px solid ${showRoute ? GOLD : BORDER}`,
+              color: showRoute ? GOLD : MUTED,
+            }}>{showRoute?"● Path":"○ Path"}</button>
+            <button onClick={runRoute} disabled={optimizing} style={{
+              padding:"0.35rem 1rem",borderRadius:6,cursor:optimizing?"not-allowed":"pointer",
+              fontFamily:SANS,fontSize:"0.82rem",fontWeight:700,letterSpacing:"0.03em",transition:"all 0.2s",
+              background: optimizing ? "transparent" : GOLD,
+              border: `1px solid ${optimizing ? BORDER : GOLD}`,
+              color: optimizing ? MUTED : DARK,
+            }}>{optimizing?"⏳ Running…":"▶ Optimize"}</button>
+            <div style={{width:1,height:20,background:BORDER}}/>
+            {[
+              ["⟳ Collide", recheckCollisions, GOLD, "Re-check pick-node collisions"],
+              ["💾 Save",    saveMap,            CREAM, ""],
+            ].map(([label,fn,col,title])=>(
+              <button key={label} onClick={fn} title={title} style={{
+                padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
+                fontFamily:MONO,fontSize:"0.7rem",fontWeight:500,letterSpacing:"0.04em",transition:"all 0.2s",
+                background:"transparent",border:`1px solid ${BORDER}`,color:col,
+              }}>{label}</button>
+            ))}
+            <button onClick={()=>loadFileRef.current?.click()} style={{
+              padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
+              fontFamily:MONO,fontSize:"0.7rem",fontWeight:500,letterSpacing:"0.04em",transition:"all 0.2s",
+              background:"transparent",border:`1px solid ${BORDER}`,color:CREAM,
+            }}>📂 Load</button>
+            <input ref={loadFileRef} type="file" accept=".json" onChange={loadMap} style={{display:"none"}} />
+            <button onClick={()=>{if(window.confirm("Clear everything?")){
+              pushUndo(items,walls);
+              setItems([]);setWalls([]);setSelectedId(null);}}}
+              style={{padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
+                background:"transparent",border:`1px solid ${"#f43f5e44"}`,color:"#f43f5e88"}}>Clear</button>
+          </div>
+        </header>
+      )}
+
+      {/* ══ HEADER — MOBILE ══ */}
+      {isMobile && (
+        <header style={{
+          zIndex:100,flexShrink:0,
+          background:"rgba(26,15,10,0.97)",
+          borderBottom:`1px solid ${BORDER}`,
+          padding:"0.5rem 0.75rem",
+          display:"flex",alignItems:"center",gap:"0.5rem",
+        }}>
+          {/* Logo (compact) */}
+          <div style={{fontFamily:SERIF,fontSize:"0.95rem",fontWeight:900,color:GOLD,letterSpacing:"-0.02em",flexShrink:0}}>
+            SMB
+          </div>
+
+          <div style={{width:1,height:22,background:BORDER,flexShrink:0}}/>
+
+          {/* Mode pills — icons only */}
+          {[["draw","✏","D"],["select","↖","S"],["erase","⌫","E"]].map(([m,icon])=>(
+            <button key={m} onClick={()=>setMode(m)} style={{
+              width:36,height:36,borderRadius:8,cursor:"pointer",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:"1rem",flexShrink:0,transition:"all 0.15s",
+              background: mode===m ? modeCol[m]+"22" : "transparent",
+              border: `1px solid ${mode===m ? modeCol[m] : BORDER}`,
+              color: mode===m ? modeCol[m] : MUTED,
+            }}>{icon}</button>
+          ))}
+
+          <div style={{width:1,height:22,background:BORDER,flexShrink:0}}/>
+
+          {/* Zoom − + */}
+          <button onClick={()=>setZoom(z=>parseFloat(Math.max(0.1,z/1.25).toFixed(3)))}
+            style={{width:32,height:32,borderRadius:6,background:"none",border:`1px solid ${BORDER}`,
+              color:GOLD,cursor:"pointer",fontSize:"1.2rem",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
+          <span style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD,minWidth:30,textAlign:"center",flexShrink:0}}>{Math.round(zoom*100)}%</span>
+          <button onClick={()=>setZoom(z=>parseFloat(Math.min(8,z*1.25).toFixed(3)))}
+            style={{width:32,height:32,borderRadius:6,background:"none",border:`1px solid ${BORDER}`,
+              color:GOLD,cursor:"pointer",fontSize:"1.2rem",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
+          <button onClick={fitView}
+            style={{width:32,height:32,borderRadius:6,background:"none",border:`1px solid ${BORDER}`,
+              color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.6rem",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>FIT</button>
+
+          {/* Spacer */}
+          <div style={{flex:1}}/>
+
+          {/* Optimize */}
+          <button onClick={runRoute} disabled={optimizing} style={{
+            padding:"0.35rem 0.6rem",borderRadius:6,cursor:optimizing?"not-allowed":"pointer",
+            fontFamily:SANS,fontSize:"0.75rem",fontWeight:700,flexShrink:0,
+            background: optimizing ? "transparent" : GOLD,
+            border: `1px solid ${optimizing ? BORDER : GOLD}`,
+            color: optimizing ? MUTED : DARK,
+          }}>{optimizing?"⏳":"▶"}</button>
+
+          {/* Save */}
+          <button onClick={saveMap} style={{
+            width:36,height:36,borderRadius:6,cursor:"pointer",flexShrink:0,
+            background:"transparent",border:`1px solid ${BORDER}`,color:CREAM,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem",
+          }}>💾</button>
+
+          {/* Panel toggle */}
+          <button onClick={()=>setSheetOpen(o=>!o)} style={{
+            width:36,height:36,borderRadius:8,cursor:"pointer",flexShrink:0,
+            background: sheetOpen ? GOLD+"22" : "transparent",
+            border: `1px solid ${sheetOpen ? GOLD : BORDER}`,
+            color: sheetOpen ? GOLD : MUTED,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem",
+          }}>☰</button>
+        </header>
+      )}
+
+      {/* ══ BODY ══ */}
+      <div style={{flex:1,display:"flex",overflow:"hidden",position:"relative",
+        flexDirection: isMobile ? "column" : "row"}}>
+
+        {/* ══ SIDE PANEL — DESKTOP ══ */}
+        {!isMobile && (
+          <aside style={{
+            width:244,flexShrink:0,
+            background:"#160C08",
+            borderRight:`1px solid ${BORDER}`,
+            display:"flex",flexDirection:"column",overflow:"hidden",
+          }}>
+            {/* Panel tabs */}
+            <div style={{display:"flex",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
+              {[["draw","Draw"],["edit","Edit"],["route","Route"]].map(([id,label])=>(
+                <button key={id} onClick={()=>setPanelTab(id)} style={tab(panelTab===id)}>{label}</button>
+              ))}
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"1rem 0.875rem",
+              scrollbarWidth:"thin",scrollbarColor:`${GOLD_DIM} transparent`}}>
+              {renderPanelContent()}
+            </div>
+          </aside>
+        )}
+
+        {/* ══ CANVAS AREA ══ */}
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
 
           {linkPickMode&&(
             <div style={{flexShrink:0,background:"#2C1810",borderBottom:`1px solid ${GOLD}44`,
@@ -1437,18 +1531,14 @@ export default function StoreMapBuilder() {
                 : linkPickMode ? "cell"
                 : mode==="draw" ? "crosshair"
                 : mode==="erase" ? "not-allowed"
-                : mode==="select" ? "default"
                 : "default",
               touchAction:"none"}}
             onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}
             onMouseLeave={onMouseLeave} onContextMenu={e=>e.preventDefault()}>
 
-            {/* Static canvas — items, walls, route */}
             <div style={{position:"absolute",transform:`translate(${pan.x}px,${pan.y}px)`,transformOrigin:"0 0",pointerEvents:"none"}}>
               <canvas ref={canvasRef} style={{display:"block"}} />
             </div>
-
-            {/* Overlay canvas — preview rect / wall preview */}
             <div style={{position:"absolute",transform:`translate(${pan.x}px,${pan.y}px)`,transformOrigin:"0 0",pointerEvents:"none"}}>
               <canvas ref={overlayCanvasRef} style={{display:"block"}} />
             </div>
@@ -1457,16 +1547,17 @@ export default function StoreMapBuilder() {
             {optimizing&&(
               <div style={{position:"absolute",inset:0,zIndex:10,
                 background:"rgba(13,8,5,0.88)",backdropFilter:"blur(8px)",
-                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"1rem"}}>
-                <div style={{fontFamily:SERIF,fontSize:"1.6rem",fontWeight:900,color:CREAM,letterSpacing:"-0.02em"}}>
+                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"1rem",
+                padding:"1rem"}}>
+                <div style={{fontFamily:SERIF,fontSize: isMobile ? "1.2rem" : "1.6rem",fontWeight:900,color:CREAM,letterSpacing:"-0.02em",textAlign:"center"}}>
                   Optimizing Route
                 </div>
-                <div style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD_DIM,letterSpacing:"0.2em",textTransform:"uppercase"}}>
+                <div style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD_DIM,letterSpacing:"0.15em",textTransform:"uppercase",textAlign:"center"}}>
                   NN → 2-opt → Or-opt → 3-opt → Annealing
                 </div>
                 {optProgress.total>0
                   ? <>
-                    <div style={{width:280,height:3,background:`rgba(212,175,55,0.15)`,borderRadius:2,overflow:"hidden"}}>
+                    <div style={{width: isMobile ? "80%" : 280,height:3,background:`rgba(212,175,55,0.15)`,borderRadius:2,overflow:"hidden"}}>
                       <div style={{height:"100%",borderRadius:2,transition:"width 0.15s ease",
                         background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
                         width:`${Math.round(optProgress.done/optProgress.total*100)}%`}} />
@@ -1478,9 +1569,6 @@ export default function StoreMapBuilder() {
                   </>
                   : <div style={{fontFamily:MONO,fontSize:"0.72rem",color:MUTED}}>Building node graph…</div>
                 }
-                <div style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED+"88"}}>
-                  Timeout in {Math.round(WORKER_TIMEOUT_MS/1000)}s
-                </div>
                 <button onClick={()=>{
                   workerRef.current?.terminate(); workerRef.current=null;
                   clearTimeout(workerTimerRef.current); workerTimerRef.current=null;
@@ -1495,7 +1583,48 @@ export default function StoreMapBuilder() {
           </div>
         </div>
 
+        {/* ══ BOTTOM SHEET — MOBILE ══ */}
+        {isMobile && (
+          <>
+            {/* Scrim */}
+            {sheetOpen && (
+              <div onClick={()=>setSheetOpen(false)}
+                style={{position:"absolute",inset:0,zIndex:199,background:"rgba(0,0,0,0.5)"}} />
+            )}
+            <div style={{
+              position:"absolute",bottom:0,left:0,right:0,
+              zIndex:200,
+              background:"#160C08",
+              borderTop:`1px solid ${BORDER}`,
+              borderRadius:"16px 16px 0 0",
+              maxHeight: sheetOpen ? "72vh" : 0,
+              overflow:"hidden",
+              transition:"max-height 0.3s cubic-bezier(0.4,0,0.2,1)",
+              display:"flex",flexDirection:"column",
+            }}>
+              {/* Drag handle */}
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"10px 0 4px",flexShrink:0,cursor:"pointer"}}
+                onClick={()=>setSheetOpen(o=>!o)}>
+                <div style={{width:36,height:4,borderRadius:2,background:BORDER}}/>
+              </div>
+
+              {/* Tabs */}
+              <div style={{display:"flex",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
+                {[["draw","Draw"],["edit","Edit"],["route","Route"]].map(([id,label])=>(
+                  <button key={id} onClick={()=>setPanelTab(id)} style={tab(panelTab===id)}>{label}</button>
+                ))}
+              </div>
+
+              {/* Panel content — scrollable */}
+              <div style={{flex:1,overflowY:"auto",padding:"0.875rem",
+                scrollbarWidth:"thin",scrollbarColor:`${GOLD_DIM} transparent`,
+                WebkitOverflowScrolling:"touch"}}>
+                {renderPanelContent()}
+              </div>
+            </div>
+          </>
+        )}
+
       </div>
     </div>
   );
-}
