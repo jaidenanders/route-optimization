@@ -7,7 +7,6 @@ export function buildAllNodes(items) {
   for (const shelf of items.filter(it => it.type==="shelf" && (it.sections||0)>0 && !it.excluded)) {
     const isV=shelf.h>shelf.w, isQ=shelf.h===shelf.w;
 
-    // ── Endcap: always exactly 1 pick node at the centre of the pick edge ──
     if (shelf.tempZone==="endcap") {
       const edge=shelf.pickSide||(isV?"right":"bottom");
       let c,r;
@@ -23,13 +22,11 @@ export function buildAllNodes(items) {
       continue;
     }
 
-    // ── Action Alley: 2 nodes (one pair of opposing sides) or 4 nodes (all sides) ──
     if (shelf.tempZone==="action_alley") {
       const fourNodes = shelf.aaNodes==="4";
       const midR=Math.round(shelf.r+shelf.h/2);
       const midC=Math.round(shelf.c+shelf.w/2);
-      // Determine which axis is "primary" for 2-node mode
-      const aaSide=shelf.pickSide||(isV?"lr":"tb"); // "lr"=left+right, "tb"=top+bottom
+      const aaSide=shelf.pickSide||(isV?"lr":"tb");
       const doLR = fourNodes || aaSide==="lr";
       const doTB = fourNodes || aaSide==="tb";
       let s=1;
@@ -44,7 +41,6 @@ export function buildAllNodes(items) {
       continue;
     }
 
-    // ── Normal shelves ──────────────────────────────────────────────────────
     const N=shelf.sections;
     const edge=shelf.pickSide||(isV?"right":"bottom");
     for (let s=1;s<=N;s++) {
@@ -69,19 +65,43 @@ function _nd(shelf,s,c,r,suf) {
     code:suf?`${shelf.dept||""}${shelf.num||""}-${suf}`:`${shelf.dept||""}${shelf.num||""}-${s}` };
 }
 
+// ── Unreachable detection ─────────────────────────────────────────────────────
+// A node is considered unreachable if A* can only produce a 2-cell "teleport"
+// fallback (i.e. it gave up and returned [start, end] directly).
+function isPathFallback(path, sc, sr, ec, er) {
+  if (path.length !== 2) return false;
+  return (
+    path[0].c === sc && path[0].r === sr &&
+    path[1].c === ec && path[1].r === er &&
+    (sc !== ec || sr !== er)
+  );
+}
+
 // ── Lazy cached distance ──────────────────────────────────────────────────────
 function makeDistCache(blocked, wallEdges) {
   const cache = new Map();
-  function dist(c1,r1,c2,r2) {
-    if (c1===c2&&r1===r2) return 0;
+  // Returns { dist, unreachable }
+  function distResult(c1,r1,c2,r2) {
+    if (c1===c2&&r1===r2) return { dist: 0, unreachable: false };
     const key=c1<c2||(c1===c2&&r1<r2)?`${c1},${r1}|${c2},${r2}`:`${c2},${r2}|${c1},${r1}`;
     if (cache.has(key)) return cache.get(key);
-    const d=astar(blocked,wallEdges,c1,r1,c2,r2).length-1;
-    cache.set(key,d); return d;
+    const p = astar(blocked,wallEdges,c1,r1,c2,r2);
+    const unreachable = isPathFallback(p, c1, r1, c2, r2);
+    const d = unreachable ? Infinity : p.length - 1;
+    const result = { dist: d, unreachable, path: p };
+    cache.set(key, result); return result;
   }
-  function path(c1,r1,c2,r2) { return astar(blocked,wallEdges,c1,r1,c2,r2); }
-  function man(c1,r1,c2,r2)  { return Math.abs(c1-c2)+Math.abs(r1-r2); }
-  return { dist, path, man };
+  function dist(c1,r1,c2,r2) {
+    const r = distResult(c1,r1,c2,r2);
+    return r.unreachable ? 99999 : r.dist;
+  }
+  function path(c1,r1,c2,r2) {
+    const r = distResult(c1,r1,c2,r2);
+    return r.path || astar(blocked,wallEdges,c1,r1,c2,r2);
+  }
+  function man(c1,r1,c2,r2) { return Math.abs(c1-c2)+Math.abs(r1-r2); }
+  function checkUnreachable(c1,r1,c2,r2) { return distResult(c1,r1,c2,r2).unreachable; }
+  return { dist, path, man, checkUnreachable };
 }
 
 // ── Nearest-neighbour (endpoint-aware) ───────────────────────────────────────
@@ -248,7 +268,7 @@ function simulatedAnnealing(tour, nodes, startC, startR, endC, endR, dc, onProgr
 // ── Main entry point ──────────────────────────────────────────────────────────
 export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wallEdges, onProgress) {
   const allNodes=buildAllNodes(items);
-  if (!allNodes.length) return { path:[], sectionSeq:[], aisleOrder:[], cost:0 };
+  if (!allNodes.length) return { path:[], sectionSeq:[], aisleOrder:[], cost:0, unreachable:[] };
 
   const getPass=tz=>TEMP_ZONES[tz]?.pass??0;
   const totalNodes=allNodes.length;
@@ -285,17 +305,31 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
 
   if (onProgress) onProgress(Math.floor(totalNodes*0.97),totalNodes);
 
+  // ── Build full path & detect unreachable nodes ────────────────────────────
   let walkC=startPt.c, walkR=startPt.r;
   const fullPath=[];
+  const unreachableCodes=[];
+
   for (const node of finalTourNodes) {
     const seg=dc.path(walkC,walkR,node.c,node.r);
+    // Detect fallback (unreachable): A* gave up and returned direct [start,end]
+    if (isPathFallback(seg, walkC, walkR, node.c, node.r)) {
+      unreachableCodes.push(node.code);
+    }
     if (fullPath.length===0) fullPath.push(...seg); else fullPath.push(...seg.slice(1));
-    totalCost+=seg.length-1; walkC=node.c; walkR=node.r;
+    totalCost += isPathFallback(seg, walkC, walkR, node.c, node.r) ? 0 : seg.length-1;
+    walkC=node.c; walkR=node.r;
   }
   const endSeg=astar(blocked,wallEdges,walkC,walkR,endPt.c,endPt.r);
   if (fullPath.length===0) fullPath.push(...endSeg); else fullPath.push(...endSeg.slice(1));
   totalCost+=endSeg.length-1;
   if (onProgress) onProgress(totalNodes,totalNodes);
 
-  return { path:fullPath, sectionSeq, aisleOrder:[...seenShelves.values()], cost:totalCost };
+  return {
+    path: fullPath,
+    sectionSeq,
+    aisleOrder: [...seenShelves.values()],
+    cost: totalCost,
+    unreachable: unreachableCodes,
+  };
 }
