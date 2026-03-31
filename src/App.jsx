@@ -1553,7 +1553,7 @@ export default function StoreMapBuilder() {
                   Optimizing Route
                 </div>
                 <div style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD_DIM,letterSpacing:"0.15em",textTransform:"uppercase",textAlign:"center"}}>
-                  NN → 2-opt → Or-opt → 3-opt → Annealing
+                  NN → 2-opt → Or-opt → 3-opt → Or-opt → 2-opt
                 </div>
                 {optProgress.total>0
                   ? <>
