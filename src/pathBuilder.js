@@ -66,24 +66,24 @@ function _nd(shelf,s,c,r,suf) {
 }
 
 // ── Unreachable detection ─────────────────────────────────────────────────────
-// A node is considered unreachable if A* can only produce a 2-cell "teleport"
-// fallback (i.e. it gave up and returned [start, end] directly).
+// A* returns [start, end] as a 2-cell fallback when no real path exists.
+// A legitimate 2-cell path only occurs when start and end are directly adjacent
+// (Manhattan distance = 1). If the two points are further apart but the path is
+// only 2 cells, it must be the fallback teleport — i.e. truly unreachable.
 function isPathFallback(path, sc, sr, ec, er) {
   if (path.length !== 2) return false;
-  return (
-    path[0].c === sc && path[0].r === sr &&
-    path[1].c === ec && path[1].r === er &&
-    (sc !== ec || sr !== er)
-  );
+  if (sc === ec && sr === er) return false;
+  const adjacent = Math.abs(sc - ec) + Math.abs(sr - er) === 1;
+  return !adjacent;
 }
 
 // ── Lazy cached distance ──────────────────────────────────────────────────────
 function makeDistCache(blocked, wallEdges) {
+  // Keyed directionally (c1,r1 → c2,r2) so reverse paths don't collide.
   const cache = new Map();
-  // Returns { dist, unreachable }
   function distResult(c1,r1,c2,r2) {
-    if (c1===c2&&r1===r2) return { dist: 0, unreachable: false };
-    const key=c1<c2||(c1===c2&&r1<r2)?`${c1},${r1}|${c2},${r2}`:`${c2},${r2}|${c1},${r1}`;
+    if (c1===c2&&r1===r2) return { dist: 0, unreachable: false, path: [{c:c1,r:r1}] };
+    const key = `${c1},${r1}|${c2},${r2}`;
     if (cache.has(key)) return cache.get(key);
     const p = astar(blocked,wallEdges,c1,r1,c2,r2);
     const unreachable = isPathFallback(p, c1, r1, c2, r2);
@@ -96,12 +96,10 @@ function makeDistCache(blocked, wallEdges) {
     return r.unreachable ? 99999 : r.dist;
   }
   function path(c1,r1,c2,r2) {
-    const r = distResult(c1,r1,c2,r2);
-    return r.path || astar(blocked,wallEdges,c1,r1,c2,r2);
+    return distResult(c1,r1,c2,r2).path;
   }
   function man(c1,r1,c2,r2) { return Math.abs(c1-c2)+Math.abs(r1-r2); }
-  function checkUnreachable(c1,r1,c2,r2) { return distResult(c1,r1,c2,r2).unreachable; }
-  return { dist, path, man, checkUnreachable };
+  return { dist, path, man };
 }
 
 // ── Nearest-neighbour (endpoint-aware) ───────────────────────────────────────
