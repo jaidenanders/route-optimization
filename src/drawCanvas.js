@@ -1,9 +1,11 @@
 import { CELL, COLS, ROWS, ITEM_TYPES, TEMP_ZONES, WALL_COLOR } from "./constants.js";
 
+// ── Static layer ──────────────────────────────────────────────────────────────
+// Redraws only when items / walls / route / zoom change — NOT on every mousemove.
 export function drawCanvas(
-  canvas, items, walls, drawTool, previewRect, selectedId,
-  zoom, wallPreview, bgImageEl, bgImage, bgOpacity,
-  routePath, showRoute, START, END
+  canvas, items, walls, zoom,
+  bgImageEl, bgImage, bgOpacity,
+  routePath, showRoute, START, END, pickNodes, selectedId
 ) {
   const CZ = CELL * zoom;
   canvas.width  = Math.round(COLS * CZ);
@@ -127,7 +129,6 @@ export function drawCanvas(
 
     const dot=(x,y)=>{ctx.beginPath();ctx.arc(x,y,dotR,0,Math.PI*2);ctx.fill();ctx.stroke();};
 
-    // Endcap: single node at centre of pick edge
     if (item.tempZone==="endcap") {
       const edge=item.pickSide||(isV?"right":"bottom");
       const midR=(item.r+item.h/2)*CZ, midC=(item.c+item.w/2)*CZ;
@@ -138,7 +139,6 @@ export function drawCanvas(
       ctx.restore(); return;
     }
 
-    // Action Alley: 2 nodes (L+R or T+B) or 4 nodes (all sides)
     if (item.tempZone==="action_alley") {
       const fourNodes=item.aaNodes==="4";
       const aaSide=item.pickSide||(isV?"lr":"tb");
@@ -154,7 +154,6 @@ export function drawCanvas(
       ctx.restore(); return;
     }
 
-    // Normal shelves
     const N=item.sections;
     const edge=item.pickSide||(isV?"right":"bottom");
     for (let s=1;s<=N;s++) {
@@ -176,18 +175,6 @@ export function drawCanvas(
     ctx.restore();
   });
 
-  // Preview rect
-  if (previewRect&&previewRect.w>0&&previewRect.h>0) {
-    const col=(drawTool.tempZone&&TEMP_ZONES[drawTool.tempZone]?.color)||ITEM_TYPES[drawTool.type]?.color||"#818cf8";
-    const x=previewRect.c*CZ, y=previewRect.r*CZ, w=previewRect.w*CZ, h=previewRect.h*CZ;
-    ctx.fillStyle=col+"30"; ctx.fillRect(x,y,w,h);
-    ctx.strokeStyle=col; ctx.lineWidth=1.5;
-    ctx.setLineDash([4,3]); ctx.strokeRect(x,y,w,h); ctx.setLineDash([]);
-    ctx.fillStyle=col; ctx.font=`700 ${Math.max(10,11*zoom)}px monospace`;
-    ctx.textAlign="center"; ctx.textBaseline="middle";
-    ctx.fillText(`${previewRect.w}×${previewRect.h}`,x+w/2,y+h/2);
-  }
-
   // Walls
   function drawWall(seg, isPreview, isSel) {
     const x1=seg.c1*CZ, y1=seg.r1*CZ, x2=seg.c2*CZ, y2=seg.r2*CZ;
@@ -199,7 +186,6 @@ export function drawCanvas(
     ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur=0;
   }
   walls.forEach(w=>drawWall(w,false,w.id===selectedId));
-  if (wallPreview) drawWall(wallPreview,true,false);
 
   // Route path
   if (showRoute && routePath && routePath.length > 1) {
@@ -230,5 +216,62 @@ export function drawCanvas(
       ctx.textAlign="center"; ctx.textBaseline="middle";
       ctx.fillText(lbl,mx,my);
     });
+  }
+}
+
+// ── Overlay layer ─────────────────────────────────────────────────────────────
+// Redraws ONLY the drag-preview / wall-preview — fires on every mousemove.
+// Keeping this separate avoids re-drawing every shelf on every mouse event.
+export function drawOverlayCanvas(canvas, drawTool, previewRect, wallPreview, zoom, dragItemPreview) {
+  const CZ = CELL * zoom;
+  canvas.width  = Math.round(COLS * CZ);
+  canvas.height = Math.round(ROWS * CZ);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Item drag ghost — semi-transparent version of the item at its new position
+  if (dragItemPreview) {
+    const { c, r, w, h, color } = dragItemPreview;
+    const x = c * CZ, y = r * CZ, pw = w * CZ, ph = h * CZ;
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = color + "44";
+    ctx.fillRect(x, y, pw, ph);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.5, 2 * zoom);
+    ctx.setLineDash([5 * zoom, 3 * zoom]);
+    ctx.strokeRect(x + 0.5, y + 0.5, pw - 1, ph - 1);
+    ctx.setLineDash([]);
+    // Drop-shadow glow to make the ghost stand out
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10 * zoom;
+    ctx.strokeRect(x + 0.5, y + 0.5, pw - 1, ph - 1);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Preview rect (draw mode)
+  if (previewRect && previewRect.w > 0 && previewRect.h > 0) {
+    const col=(drawTool.tempZone&&TEMP_ZONES[drawTool.tempZone]?.color)||ITEM_TYPES[drawTool.type]?.color||"#818cf8";
+    const x=previewRect.c*CZ, y=previewRect.r*CZ, w=previewRect.w*CZ, h=previewRect.h*CZ;
+    ctx.fillStyle=col+"30"; ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle=col; ctx.lineWidth=1.5;
+    ctx.setLineDash([4,3]); ctx.strokeRect(x,y,w,h); ctx.setLineDash([]);
+    ctx.fillStyle=col; ctx.font=`700 ${Math.max(10,11*zoom)}px monospace`;
+    ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText(`${previewRect.w}×${previewRect.h}`,x+w/2,y+h/2);
+  }
+
+  // Wall preview
+  if (wallPreview) {
+    const {c1,r1,c2,r2} = wallPreview;
+    const x1=c1*CZ, y1=r1*CZ, x2=c2*CZ, y2=r2*CZ;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.lineWidth=Math.max(2,2.5*zoom);
+    ctx.lineCap="round";
+    ctx.strokeStyle=WALL_COLOR+"99";
+    ctx.shadowColor=WALL_COLOR; ctx.shadowBlur=6*zoom;
+    ctx.setLineDash([4*zoom,3*zoom]);
+    ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur=0;
   }
 }
