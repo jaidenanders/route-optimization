@@ -1,13 +1,35 @@
 import { useState, useRef, useLayoutEffect, useEffect, useCallback, useMemo } from "react";
 import { COLS, ROWS, CELL, ITEM_TYPES, TEMP_ZONES, ORIENT, genId } from "./constants.js";
 import { calcEntrance } from "./routing.js";
-import { drawCanvas } from "./drawCanvas.js";
+import { drawCanvas, drawOverlayCanvas } from "./drawCanvas.js";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const MAX_UNDO = 40;
+const WORKER_TIMEOUT_MS = 60_000; // 60 s hard limit
+
+// ── Tiny helpers ──────────────────────────────────────────────────────────────
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    if (e instanceof DOMException && (
+      e.code === 22 || e.code === 1014 ||
+      e.name === "QuotaExceededError" ||
+      e.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    )) {
+      return false;
+    }
+    return false;
+  }
+}
 
 export default function StoreMapBuilder() {
-  const canvasRef       = useRef(null);
-  const mapContainerRef = useRef(null);
-  const loadFileRef     = useRef(null);
-  const bgFileRef       = useRef(null);
+  const canvasRef         = useRef(null);  // static layer
+  const overlayCanvasRef  = useRef(null);  // dynamic / preview layer
+  const mapContainerRef   = useRef(null);
+  const loadFileRef       = useRef(null);
+  const bgFileRef         = useRef(null);
 
   // ── Core map state ──────────────────────────────────────────────────────────
   const [items,     setItems]     = useState([]);
@@ -15,6 +37,34 @@ export default function StoreMapBuilder() {
   const [bgImage,   setBgImage]   = useState(null);
   const [bgOpacity, setBgOpacity] = useState(0.35);
   const [bgImageEl, setBgImageEl] = useState(null);
+
+  // ── Undo stack ──────────────────────────────────────────────────────────────
+  const undoStack = useRef([]);   // [{items, walls}]
+  const redoStack = useRef([]);
+
+  const pushUndo = useCallback((prevItems, prevWalls) => {
+    undoStack.current.push({ items: prevItems, walls: prevWalls });
+    if (undoStack.current.length > MAX_UNDO) undoStack.current.shift();
+    redoStack.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    if (!undoStack.current.length) return;
+    const snap = undoStack.current.pop();
+    redoStack.current.push({ items, walls });
+    setItems(snap.items);
+    setWalls(snap.walls);
+    setSelectedId(null);
+  }, [items, walls]);
+
+  const redo = useCallback(() => {
+    if (!redoStack.current.length) return;
+    const snap = redoStack.current.pop();
+    undoStack.current.push({ items, walls });
+    setItems(snap.items);
+    setWalls(snap.walls);
+    setSelectedId(null);
+  }, [items, walls]);
 
   // ── UI state ────────────────────────────────────────────────────────────────
   const [selectedId,  setSelectedId]  = useState(null);
@@ -36,18 +86,36 @@ export default function StoreMapBuilder() {
   const [linkPickMode,    setLinkPickMode]    = useState(false);
   const [draggingMarker,  setDraggingMarker]  = useState(null);
 
+  // ── Item drag (select mode) ─────────────────────────────────────────────────
+  // draggingItem: { id, offsetC, offsetR } — grab offset within the item
+  // dragItemPreview: { c, r, w, h, color, type } — ghost position while dragging
+  const draggingItemRef   = useRef(null);
+  const [dragItemPreview, setDragItemPreview] = useState(null);
+  // Track mousedown cell to distinguish click vs drag
+  const mouseDownCellRef  = useRef(null);
+
+  // ── Toast notifications ─────────────────────────────────────────────────────
+  const [toasts, setToasts] = useState([]); // [{id, msg, type}]
+  const showToast = useCallback((msg, type = "warn", duration = 5000) => {
+    const id = genId();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), duration);
+  }, []);
+
   // ── Routing state ───────────────────────────────────────────────────────────
   const [START,        setSTART]        = useState({ c: 10, r: 10 });
   const [END,          setEND]          = useState({ c: 10, r: 12 });
   const [routePath,    setRoutePath]    = useState(null);
   const [sectionSeq,   setSectionSeq]   = useState([]);
   const [aisleOrder,   setAisleOrder]   = useState([]);
-  const [pickNodes,    setPickNodes]    = useState([]); // {c,r,tempZone} for each visited node
+  const [pickNodes,    setPickNodes]    = useState([]);
   const [simStats,     setSimStats]     = useState(null);
   const [showRoute,    setShowRoute]    = useState(false);
   const [optimizing,   setOptimizing]   = useState(false);
   const [optProgress,  setOptProgress]  = useState({ done: 0, total: 0 });
-  const workerRef = useRef(null);
+  const [unreachable,  setUnreachable]  = useState([]);   // codes of unreachable nodes
+  const workerRef      = useRef(null);
+  const workerTimerRef = useRef(null);
   const [routeSearch,        setRouteSearch]        = useState("");
   const [highlightedAisleId, setHighlightedAisleId] = useState(null);
   const [highlightedSecIdx,  setHighlightedSecIdx]  = useState(null);
@@ -65,10 +133,17 @@ export default function StoreMapBuilder() {
       if (d.END)     setEND(d.END);
     } catch (_) {}
   }, []);
+
   useEffect(() => {
-    if (items.length > 0 || walls.length > 0)
-      localStorage.setItem("storeMap", JSON.stringify({ items, walls, bgImage, START, END }));
-  }, [items, walls, bgImage, START, END]);
+    // Always persist — even empty state — so a clear doesn't leave stale data
+    // Strip bgImage dataUrl from localStorage to avoid quota blowout;
+    // the user will need to re-upload on refresh (image is kept in React state).
+    const payload = JSON.stringify({ items, walls, bgImage: null, START, END });
+    const ok = safeLocalStorageSet("storeMap", payload);
+    if (!ok) {
+      showToast("⚠️ Storage quota exceeded — map not saved to browser storage. Use Save (💾) to download a file.", "error", 8000);
+    }
+  }, [items, walls, START, END]); // intentionally omit bgImage from persistence
 
   useEffect(() => {
     if (!bgImage?.dataUrl) { setBgImageEl(null); return; }
@@ -90,20 +165,102 @@ export default function StoreMapBuilder() {
       return newZ;
     });
   }, []);
+
   useEffect(() => {
     const el = mapContainerRef.current; if (!el) return;
     el.addEventListener("wheel", handleWheel, { passive: false });
     return () => el.removeEventListener("wheel", handleWheel);
   }, [handleWheel]);
 
+  // ── Touch support ───────────────────────────────────────────────────────────
+  const lastTouchRef    = useRef(null);   // single-touch pan
+  const pinchStartRef   = useRef(null);   // {dist, zoom, panX, panY, midX, midY}
+
+  const getTouchDist = (t1, t2) =>
+    Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+  const handleTouchStart = useCallback((e) => {
+    if (e.touches.length === 1) {
+      lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      pinchStartRef.current = null;
+    } else if (e.touches.length === 2) {
+      const [t1, t2] = [e.touches[0], e.touches[1]];
+      pinchStartRef.current = {
+        dist: getTouchDist(t1, t2),
+        zoom,
+        panX: pan.x,
+        panY: pan.y,
+        midX: (t1.clientX + t2.clientX) / 2,
+        midY: (t1.clientY + t2.clientY) / 2,
+      };
+      lastTouchRef.current = null;
+    }
+  }, [zoom, pan]);
+
+  const handleTouchMove = useCallback((e) => {
+    e.preventDefault();
+    if (e.touches.length === 2 && pinchStartRef.current) {
+      const [t1, t2] = [e.touches[0], e.touches[1]];
+      const newDist = getTouchDist(t1, t2);
+      const { dist, zoom: startZoom, panX, panY, midX, midY } = pinchStartRef.current;
+      const scale = newDist / dist;
+      const newZ  = parseFloat(Math.min(8, Math.max(0.1, startZoom * scale)).toFixed(3));
+      setPan({
+        x: midX - (midX - panX) * (newZ / startZoom),
+        y: midY - (midY - panY) * (newZ / startZoom),
+      });
+      setZoom(newZ);
+    } else if (e.touches.length === 1 && lastTouchRef.current) {
+      const dx = e.touches[0].clientX - lastTouchRef.current.x;
+      const dy = e.touches[0].clientY - lastTouchRef.current.y;
+      lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      setPan(p => ({ x: p.x + dx, y: p.y + dy }));
+    }
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    lastTouchRef.current  = null;
+    pinchStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const el = mapContainerRef.current; if (!el) return;
+    el.addEventListener("touchstart",  handleTouchStart, { passive: false });
+    el.addEventListener("touchmove",   handleTouchMove,  { passive: false });
+    el.addEventListener("touchend",    handleTouchEnd,   { passive: true  });
+    return () => {
+      el.removeEventListener("touchstart",  handleTouchStart);
+      el.removeEventListener("touchmove",   handleTouchMove);
+      el.removeEventListener("touchend",    handleTouchEnd);
+    };
+  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
+
   // ── Space = pan mode ────────────────────────────────────────────────────────
   useEffect(() => {
-    const dn = (e) => { if (e.code==="Space"&&e.target===document.body){ e.preventDefault(); spaceHeldRef.current=true; } };
-    const up = (e) => { if (e.code==="Space"){ spaceHeldRef.current=false; isPanningRef.current=false; } };
+    const dn = (e) => {
+      // Keyboard shortcuts — only when not typing in an input/textarea
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+      if (e.code === "Space") { e.preventDefault(); spaceHeldRef.current = true; return; }
+
+      // Mode shortcuts
+      if (e.key === "d" || e.key === "D") { setMode("draw");   return; }
+      if (e.key === "s" || e.key === "S") { setMode("select"); return; }
+      if (e.key === "e" || e.key === "E") { setMode("erase");  return; }
+
+      // Undo / Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "z"))) {
+        e.preventDefault(); redo(); return;
+      }
+    };
+    const up = (e) => {
+      if (e.code === "Space") { spaceHeldRef.current = false; isPanningRef.current = false; }
+    };
     window.addEventListener("keydown", dn);
     window.addEventListener("keyup",   up);
     return () => { window.removeEventListener("keydown", dn); window.removeEventListener("keyup", up); };
-  }, []);
+  }, [undo, redo]);
 
   // Scroll highlighted aisle/section into view
   useEffect(() => {
@@ -114,32 +271,44 @@ export default function StoreMapBuilder() {
     if (highlightedSecIdx == null || !sectionListRef.current) return;
     sectionListRef.current.querySelector(`[data-secidx="${highlightedSecIdx}"]`)?.scrollIntoView({ block:"nearest" });
   }, [highlightedSecIdx]);
+
   const selectedItem = useMemo(() => items.find(it => it.id === selectedId) || null, [items, selectedId]);
 
+  // ── Dual-canvas rendering ───────────────────────────────────────────────────
+  // Static layer: items, walls, route, S/E markers — only redraws when those change
   useLayoutEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return;
-    drawCanvas(canvas, items, walls, drawTool, previewRect, selectedId,
-      zoom, wallPreview, bgImageEl, bgImage, bgOpacity,
-      routePath, showRoute, START, END, pickNodes);
-  }, [items, walls, drawTool, previewRect, selectedId, zoom,
-      wallPreview, bgImageEl, bgImage, bgOpacity, routePath, showRoute, START, END, pickNodes]);
+    drawCanvas(canvas, items, walls, zoom, bgImageEl, bgImage, bgOpacity,
+      routePath, showRoute, START, END, pickNodes, selectedId);
+  }, [items, walls, zoom, bgImageEl, bgImage, bgOpacity,
+      routePath, showRoute, START, END, pickNodes, selectedId]);
+
+  // Overlay layer: preview rect, wall preview, item drag ghost
+  useLayoutEffect(() => {
+    const canvas = overlayCanvasRef.current; if (!canvas) return;
+    drawOverlayCanvas(canvas, drawTool, previewRect, wallPreview, zoom, dragItemPreview);
+  }, [drawTool, previewRect, wallPreview, zoom, dragItemPreview]);
 
   // ── Coordinate helpers ──────────────────────────────────────────────────────
   const getCell = useCallback((e) => {
     const el = mapContainerRef.current; if (!el) return { c:0, r:0 };
     const rect = el.getBoundingClientRect(), CZ = CELL * zoom;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
     return {
-      c: Math.max(0, Math.min(COLS-1, Math.floor(((e.clientX - rect.left) - pan.x) / CZ))),
-      r: Math.max(0, Math.min(ROWS-1, Math.floor(((e.clientY - rect.top)  - pan.y) / CZ))),
+      c: Math.max(0, Math.min(COLS-1, Math.floor(((clientX - rect.left) - pan.x) / CZ))),
+      r: Math.max(0, Math.min(ROWS-1, Math.floor(((clientY - rect.top)  - pan.y) / CZ))),
     };
   }, [zoom, pan]);
 
   const getEdge = useCallback((e) => {
     const el = mapContainerRef.current; if (!el) return { c:0, r:0 };
     const rect = el.getBoundingClientRect(), CZ = CELL * zoom;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
     return {
-      c: Math.max(0, Math.min(COLS, Math.round(((e.clientX - rect.left) - pan.x) / CZ))),
-      r: Math.max(0, Math.min(ROWS, Math.round(((e.clientY - rect.top)  - pan.y) / CZ))),
+      c: Math.max(0, Math.min(COLS, Math.round(((clientX - rect.left) - pan.x) / CZ))),
+      r: Math.max(0, Math.min(ROWS, Math.round(((clientY - rect.top)  - pan.y) / CZ))),
     };
   }, [zoom, pan]);
 
@@ -151,7 +320,7 @@ export default function StoreMapBuilder() {
   const normRect = (c1,r1,c2,r2) => ({ c:Math.min(c1,c2), r:Math.min(r1,r2), w:Math.abs(c2-c1)+1, h:Math.abs(r2-r1)+1 });
   const hitTest  = useCallback((c,r) => [...items].reverse().find(it => c>=it.c&&c<it.c+it.w&&r>=it.r&&r<it.r+it.h), [items]);
 
-  // ── Mouse handlers ──────────────────────────────────────────────────────────
+  // ── Mouse / pointer handlers ────────────────────────────────────────────────
   const onMouseDown = useCallback((e) => {
     if (e.button===1 || e.button===2 || (e.button===0 && spaceHeldRef.current)) {
       e.preventDefault();
@@ -179,7 +348,16 @@ export default function StoreMapBuilder() {
         setLinkPickMode(false); setSelectedId(h.id); return;
       }
       if (linkPickMode) { setLinkPickMode(false); return; }
-      setSelectedId(h?.id||null); if (h) setPanelTab("edit");
+      // Record mousedown cell for click-vs-drag discrimination
+      mouseDownCellRef.current = cell;
+      if (h) {
+        // Arm item drag — offset is where inside the item the user grabbed
+        draggingItemRef.current = { id: h.id, offsetC: cell.c - h.c, offsetR: cell.r - h.r };
+        setSelectedId(h.id); setPanelTab("edit");
+      } else {
+        draggingItemRef.current = null;
+        setSelectedId(null);
+      }
     } else if (mode==="erase") {
       const CZ=CELL*zoom, el=mapContainerRef.current, r2=el.getBoundingClientRect();
       const px=e.clientX-r2.left-pan.x, py=e.clientY-r2.top-pan.y;
@@ -191,10 +369,19 @@ export default function StoreMapBuilder() {
         const dist=Math.hypot(px-(x1+t*dx),py-(y1+t*dy));
         if (dist<minDist) { minDist=dist; hitWall=w; }
       }
-      if (hitWall) { setWalls(p=>p.filter(w=>w.id!==hitWall.id)); setSelectedId(null); }
-      else { const h=hitTest(cell.c,cell.r); if(h){setItems(p=>p.filter(it=>it.id!==h.id));setSelectedId(null);} }
+      if (hitWall) {
+        pushUndo(items, walls);
+        setWalls(p=>p.filter(w=>w.id!==hitWall.id)); setSelectedId(null);
+      } else {
+        const h=hitTest(cell.c,cell.r);
+        if(h){
+          pushUndo(items, walls);
+          setItems(p=>p.filter(it=>it.id!==h.id));setSelectedId(null);
+        }
+      }
     }
-  }, [mode, drawTool, getCell, getEdge, hitTest, walls, zoom, linkPickMode, selectedId, pan, START, END]);
+  }, [mode, drawTool, getCell, getEdge, hitTest, walls, zoom, linkPickMode,
+      selectedId, pan, START, END, items, pushUndo]);
 
   const onMouseMove = useCallback((e) => {
     if (isPanningRef.current) {
@@ -203,20 +390,67 @@ export default function StoreMapBuilder() {
     }
     if (draggingMarker==="start") { setSTART(getCell(e)); return; }
     if (draggingMarker==="end")   { setEND(getCell(e));   return; }
+
+    // Item drag in select mode
+    if (mode==="select" && draggingItemRef.current) {
+      const cell = getCell(e);
+      const md = mouseDownCellRef.current;
+      // Only start showing ghost after moving at least 1 cell (prevents flicker on click)
+      if (md && Math.abs(cell.c - md.c) + Math.abs(cell.r - md.r) < 1) return;
+      const { id, offsetC, offsetR } = draggingItemRef.current;
+      const item = items.find(it => it.id === id);
+      if (!item) return;
+      const newC = Math.max(0, Math.min(COLS - item.w, cell.c - offsetC));
+      const newR = Math.max(0, Math.min(ROWS - item.h, cell.r - offsetR));
+      setDragItemPreview({ c: newC, r: newR, w: item.w, h: item.h, color: item.color, type: item.type });
+      return;
+    }
+
     if (!drawing||!dragStart) return;
     drawTool.type==="wall"
       ? setWallPreview(snapWall(dragStart, getEdge(e)))
       : setPreviewRect(normRect(dragStart.c,dragStart.r,getCell(e).c,getCell(e).r));
-  }, [drawing, dragStart, draggingMarker, drawTool, getCell, getEdge]);
+  }, [drawing, dragStart, draggingMarker, drawTool, getCell, getEdge, mode, items]);
 
   const onMouseUp = useCallback((e) => {
     if (isPanningRef.current) { isPanningRef.current=false; return; }
     if (draggingMarker) { setDraggingMarker(null); return; }
+
+    // Commit item drag
+    if (mode==="select" && draggingItemRef.current) {
+      if (dragItemPreview) {
+        // A real drag happened — move the item
+        const { id } = draggingItemRef.current;
+        pushUndo(items, walls);
+        setItems(prev => prev.map(it => {
+          if (it.id !== id) return it;
+          const moved = { ...it, c: dragItemPreview.c, r: dragItemPreview.r };
+          // Recalc entrance and pick side after move
+          if (it.type !== "zone") Object.assign(moved, calcEntrance(moved.c, moved.r, moved.w, moved.h, moved.orient));
+          if (it.type === "shelf") {
+            const isV = moved.h > moved.w, isQ = moved.h === moved.w;
+            const valid = validPickSides(isV, isQ);
+            const side = valid.includes(moved.pickSide) ? moved.pickSide : defaultPickSide(isV, isQ);
+            moved.pickSide = resolvePickSide(moved, side, prev);
+          }
+          return moved;
+        }));
+        setDragItemPreview(null);
+      }
+      // else: was a plain click — selection already set in mouseDown
+      draggingItemRef.current = null;
+      mouseDownCellRef.current = null;
+      return;
+    }
+
     if (!drawing||!dragStart) return;
     setDrawing(false);
     if (drawTool.type==="wall") {
       const seg=snapWall(dragStart,getEdge(e));
-      if (seg.r1!==seg.r2||seg.c1!==seg.c2) { const nw={id:genId(),...seg}; setWalls(p=>[...p,nw]); setSelectedId(nw.id); }
+      if (seg.r1!==seg.r2||seg.c1!==seg.c2) {
+        pushUndo(items, walls);
+        const nw={id:genId(),...seg}; setWalls(p=>[...p,nw]); setSelectedId(nw.id);
+      }
       setWallPreview(null); return;
     }
     const cell=getCell(e), rect=normRect(dragStart.c,dragStart.r,cell.c,cell.r);
@@ -240,14 +474,19 @@ export default function StoreMapBuilder() {
       aaNodes:drawTool.type==="shelf"&&drawTool.tempZone==="action_alley"?(drawTool.aaNodes||"2"):undefined,
       ...rect, ...ent
     };
+    pushUndo(items, walls);
     setItems(prev => isZone ? [newItem,...prev] : [...prev,newItem]);
     if (!isZone) setDrawTool(t=>({...t,num:(parseInt(t.num)||0)+1}));
     setSelectedId(newItem.id); setPanelTab("edit");
-  }, [drawing, dragStart, drawTool, getCell, getEdge, items]);
+  }, [drawing, dragStart, drawTool, getCell, getEdge, items, walls, pushUndo,
+      mode, dragItemPreview, draggingMarker, resolvePickSide]);
 
   const onMouseLeave = useCallback(() => {
     isPanningRef.current=false;
     setDrawing(false); setPreviewRect(null); setWallPreview(null); setDraggingMarker(null);
+    draggingItemRef.current = null;
+    mouseDownCellRef.current = null;
+    setDragItemPreview(null);
   }, []);
 
   // ── Pick side helpers ───────────────────────────────────────────────────────
@@ -302,27 +541,72 @@ export default function StoreMapBuilder() {
     }));
   };
 
+
+
   // ── Optimize route ──────────────────────────────────────────────────────────
   const runRoute = useCallback(() => {
     if (!items.filter(it=>it.type==="shelf"&&!it.excluded&&(it.sections||0)>0).length) return;
     if (workerRef.current) { workerRef.current.terminate(); workerRef.current=null; }
+    if (workerTimerRef.current) { clearTimeout(workerTimerRef.current); workerTimerRef.current=null; }
+
     setOptimizing(true); setOptProgress({done:0,total:0}); setPanelTab("route");
-    setPickNodes([]);
+    setPickNodes([]); setUnreachable([]);
+
     const worker = new Worker(new URL("./optimizer.worker.js", import.meta.url), {type:"module"});
     workerRef.current = worker;
+
+    // Hard timeout — kill worker if it hangs
+    workerTimerRef.current = setTimeout(() => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+        workerRef.current = null;
+      }
+      setOptimizing(false);
+      showToast("⏱ Optimization timed out — the map may have unreachable areas. Try re-checking collisions or removing walls.", "error", 8000);
+    }, WORKER_TIMEOUT_MS);
+
     worker.onmessage = ({data}) => {
       if (data.type==="progress") {
         setOptProgress({done:data.done,total:data.total});
       } else if (data.type==="done") {
-        setRoutePath(data.path); setSectionSeq(data.sectionSeq); setAisleOrder(data.aisleOrder);
+        clearTimeout(workerTimerRef.current);
+        workerTimerRef.current = null;
+        setRoutePath(data.path);
+        setSectionSeq(data.sectionSeq);
+        setAisleOrder(data.aisleOrder);
         setPickNodes(data.pickNodeCoords||[]);
         setSimStats({cost:data.cost,sections:data.sectionSeq.length,aisles:data.aisleOrder.length});
-        setShowRoute(true); setOptimizing(false); workerRef.current=null;
+        setShowRoute(true);
+        setOptimizing(false);
+        workerRef.current=null;
+
+        // Unreachable node detection
+        const unreachableCodes = data.unreachable || [];
+        setUnreachable(unreachableCodes);
+        if (unreachableCodes.length > 0) {
+          showToast(
+            `⚠️ ${unreachableCodes.length} node${unreachableCodes.length>1?"s":""} unreachable: ${unreachableCodes.slice(0,5).join(", ")}${unreachableCodes.length>5?" …":""}. Check for walls blocking aisles or shelves placed in corners.`,
+            "warn", 9000
+          );
+        }
       }
     };
-    worker.onerror = () => { setOptimizing(false); workerRef.current=null; };
+    worker.onerror = (err) => {
+      clearTimeout(workerTimerRef.current);
+      workerTimerRef.current = null;
+      setOptimizing(false);
+      workerRef.current=null;
+      showToast("❌ Optimizer crashed — check the browser console for details.", "error", 7000);
+    };
     worker.postMessage({items, walls, startPt:START, endPt:END});
-  }, [items, walls, START, END]);
+  }, [items, walls, START, END, showToast]);
+
+  // Cleanup worker on unmount
+  useEffect(() => () => {
+    workerRef.current?.terminate();
+    clearTimeout(workerTimerRef.current);
+  }, []);
+
   const saveMap = () => {
     const data=JSON.stringify({items,walls,bgImage,START,END});
     localStorage.setItem("storeMap",data);
@@ -336,6 +620,7 @@ export default function StoreMapBuilder() {
     reader.onload=ev=>{
       try {
         const d=JSON.parse(ev.target.result);
+        pushUndo(items, walls);
         if(d.items)   setItems(d.items);
         if(d.walls)   setWalls(d.walls);
         if(d.bgImage) setBgImage(d.bgImage);
@@ -378,7 +663,6 @@ export default function StoreMapBuilder() {
   const SANS   = "'DM Sans', sans-serif";
   const MONO   = "'DM Mono', monospace";
 
-  // Reusable style factories
   const inp = (x={}) => ({
     background:"rgba(255,255,255,0.04)", border:`1px solid ${BORDER}`,
     color:CREAM, padding:"6px 10px", borderRadius:6, fontSize:12,
@@ -456,6 +740,25 @@ export default function StoreMapBuilder() {
     <div style={{height:"100vh",background:DARK,color:CREAM,fontFamily:SANS,
       display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
+      {/* ══ TOAST NOTIFICATIONS ══ */}
+      <div style={{position:"fixed",top:60,right:16,zIndex:9999,
+        display:"flex",flexDirection:"column",gap:8,maxWidth:400,pointerEvents:"none"}}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            padding:"10px 14px", borderRadius:8, fontFamily:MONO, fontSize:"0.78rem",
+            lineHeight:1.6, pointerEvents:"auto",
+            background: t.type==="error" ? "#1a0a0a" : "#1a1400",
+            border: `1px solid ${t.type==="error" ? "#f43f5e88" : "#F1C50088"}`,
+            color: t.type==="error" ? "#f87171" : GOLD,
+            boxShadow:"0 4px 24px rgba(0,0,0,0.5)",
+            animation:"slideIn 0.2s ease",
+          }}>
+            {t.msg}
+          </div>
+        ))}
+      </div>
+      <style>{`@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}`}</style>
+
       {/* ══ HEADER ══ */}
       <header style={{
         position:"relative",zIndex:100,flexShrink:0,
@@ -474,12 +777,11 @@ export default function StoreMapBuilder() {
           </div>
         </div>
 
-        {/* Divider */}
         <div style={{width:1,height:28,background:BORDER,flexShrink:0,margin:"0 0.25rem"}}/>
 
-        {/* Mode pills */}
-        {["draw","select","erase"].map(m=>(
-          <button key={m} onClick={()=>setMode(m)} style={{
+        {/* Mode pills with keyboard hint */}
+        {[["draw","✏ Draw","D"],["select","↖ Select","S"],["erase","⌫ Erase","E"]].map(([m,label,key])=>(
+          <button key={m} onClick={()=>setMode(m)} title={`${label} (${key})`} style={{
             padding:"0.3rem 0.75rem", borderRadius:100, cursor:"pointer",
             fontFamily:MONO, fontSize:"0.72rem", fontWeight:500,
             letterSpacing:"0.08em", textTransform:"uppercase", transition:"all 0.2s",
@@ -487,7 +789,8 @@ export default function StoreMapBuilder() {
             border: `1px solid ${mode===m ? modeCol[m] : BORDER}`,
             color: mode===m ? modeCol[m] : MUTED,
           }}>
-            {m==="draw"?"✏ Draw":m==="select"?"↖ Select":"⌫ Erase"}
+            {label}
+            <span style={{marginLeft:5,fontSize:"0.6rem",opacity:0.5,fontWeight:400}}>[{key}]</span>
           </button>
         ))}
 
@@ -507,13 +810,24 @@ export default function StoreMapBuilder() {
             style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontFamily:MONO,fontSize:"0.65rem",padding:"0 3px"}}>FIT</button>
         </div>
 
+        {/* Undo / Redo */}
+        <div style={{display:"flex",gap:2}}>
+          {[["↩","Undo (Ctrl+Z)",undo,undoStack.current.length===0],
+            ["↪","Redo (Ctrl+Y)",redo,redoStack.current.length===0]].map(([icon,title,fn,disabled])=>(
+            <button key={icon} onClick={fn} title={title} disabled={disabled} style={{
+              padding:"0.3rem 0.6rem",borderRadius:6,cursor:disabled?"not-allowed":"pointer",
+              background:"transparent",border:`1px solid ${BORDER}`,
+              color:disabled?MUTED:CREAM,fontFamily:MONO,fontSize:"0.85rem",opacity:disabled?0.4:1,transition:"all 0.2s"
+            }}>{icon}</button>
+          ))}
+        </div>
+
         {/* Right-side actions */}
         <div style={{marginLeft:"auto",display:"flex",gap:"0.4rem",alignItems:"center"}}>
           <span style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED,marginRight:4}}>
             {items.filter(it=>it.type!=="zone").length} items
           </span>
 
-          {/* Path toggle */}
           <button onClick={()=>setShowRoute(r=>!r)} style={{
             padding:"0.3rem 0.75rem",borderRadius:100,cursor:"pointer",
             fontFamily:MONO,fontSize:"0.72rem",fontWeight:500,letterSpacing:"0.06em",transition:"all 0.2s",
@@ -522,7 +836,6 @@ export default function StoreMapBuilder() {
             color: showRoute ? GOLD : MUTED,
           }}>{showRoute?"● Path":"○ Path"}</button>
 
-          {/* Optimize */}
           <button onClick={runRoute} disabled={optimizing} style={{
             padding:"0.35rem 1rem",borderRadius:6,cursor:optimizing?"not-allowed":"pointer",
             fontFamily:SANS,fontSize:"0.82rem",fontWeight:700,letterSpacing:"0.03em",transition:"all 0.2s",
@@ -533,7 +846,6 @@ export default function StoreMapBuilder() {
 
           <div style={{width:1,height:20,background:BORDER}}/>
 
-          {/* Ghost buttons */}
           {[
             ["⟳ Collide", recheckCollisions, GOLD, "Re-check pick-node collisions"],
             ["💾 Save",    saveMap,            CREAM, ""],
@@ -550,9 +862,10 @@ export default function StoreMapBuilder() {
             background:"transparent",border:`1px solid ${BORDER}`,color:CREAM,
           }}>📂 Load</button>
           <input ref={loadFileRef} type="file" accept=".json" onChange={loadMap} style={{display:"none"}} />
-          <button onClick={()=>{if(window.confirm("Clear everything?")){setItems([]);setWalls([]);setSelectedId(null);}}}
+          <button onClick={()=>{if(window.confirm("Clear everything?")){
+            pushUndo(items,walls);
+            setItems([]);setWalls([]);setSelectedId(null);}}}
             style={{padding:"0.3rem 0.75rem",borderRadius:6,cursor:"pointer",
-              fontFamily:MONO,fontSize:"0.7rem",fontWeight:500,transition:"all 0.2s",
               background:"transparent",border:`1px solid ${"#f43f5e44"}`,color:"#f43f5e88"}}>Clear</button>
         </div>
       </header>
@@ -567,22 +880,18 @@ export default function StoreMapBuilder() {
           borderRight:`1px solid ${BORDER}`,
           display:"flex",flexDirection:"column",overflow:"hidden",
         }}>
-          {/* Tabs */}
           <div style={{display:"flex",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
             {[["draw","Draw"],["edit","Edit"],["route","Route"]].map(([id,label])=>(
               <button key={id} onClick={()=>setPanelTab(id)} style={tab(panelTab===id)}>{label}</button>
             ))}
           </div>
 
-          {/* Scrollable content */}
           <div style={{flex:1,overflowY:"auto",padding:"1rem 0.875rem",
             scrollbarWidth:"thin",scrollbarColor:`${GOLD_DIM} transparent`}}>
 
             {/* ─── DRAW TAB ─── */}
             {panelTab==="draw"&&(
               <div style={{display:"flex",flexDirection:"column",gap:"0.9rem"}}>
-
-                {/* Item type */}
                 <div>
                   {lbl("Item Type")}
                   <div style={{display:"flex",flexWrap:"wrap",gap:"0.3rem"}}>
@@ -598,9 +907,7 @@ export default function StoreMapBuilder() {
                 {drawTool.type==="wall"
                   ? infoBox("Click + drag to place a wall. The optimizer never crosses walls.","#f43f5e")
                   : <>
-
                   {drawTool.type==="shelf"&&<>
-                    {/* Temperature zone */}
                     <div>
                       {lbl("Temperature Zone")}
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
@@ -611,7 +918,6 @@ export default function StoreMapBuilder() {
                       </div>
                     </div>
 
-                    {/* Action Alley controls */}
                     {drawTool.tempZone==="action_alley"&&(
                       <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
                         <div>
@@ -639,7 +945,6 @@ export default function StoreMapBuilder() {
 
                     {drawTool.tempZone==="endcap"&&infoBox("🔖 Endcap — always 1 pick node at centre of edge.",GOLD)}
 
-                    {/* Pick side (non-action-alley) */}
                     {drawTool.tempZone!=="action_alley"&&drawTool.tempZone!=="endcap"&&(
                       <div>
                         {lbl("Pick Side")}
@@ -656,7 +961,6 @@ export default function StoreMapBuilder() {
                     )}
                   </>}
 
-                  {/* Dept / Label */}
                   <div>
                     {fieldLabel(drawTool.type==="zone"?"Zone Label":"Dept Letter")}
                     <input value={drawTool.dept}
@@ -664,7 +968,6 @@ export default function StoreMapBuilder() {
                       maxLength={4} style={inp()} />
                   </div>
 
-                  {/* Number */}
                   {drawTool.type!=="zone"&&(
                     <div>
                       {fieldLabel("Number")}
@@ -673,7 +976,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Sections */}
                   {drawTool.type!=="zone"&&drawTool.tempZone!=="endcap"&&drawTool.tempZone!=="action_alley"&&(
                     <div>
                       {fieldLabel("Sections",drawTool.sections)}
@@ -688,7 +990,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Color */}
                   <div>
                     {fieldLabel("Color")}
                     <div style={{display:"flex",gap:"0.35rem",alignItems:"center",flexWrap:"wrap"}}>
@@ -705,13 +1006,13 @@ export default function StoreMapBuilder() {
                   </>
                 }
 
-                {/* Tip box */}
                 <div style={{background:"rgba(255,255,255,0.02)",border:`1px solid ${BORDER}`,borderRadius:8,
                   padding:"0.6rem 0.75rem",fontFamily:MONO,fontSize:"0.7rem",color:MUTED,lineHeight:1.7}}>
-                  <span style={{color:GOLD}}>Tip — </span>Drag to place · Scroll to zoom · Right-click or Space to pan
+                  <span style={{color:GOLD}}>Keys — </span>
+                  <span style={{color:CREAM}}>D</span> Draw · <span style={{color:CREAM}}>S</span> Select · <span style={{color:CREAM}}>E</span> Erase<br/>
+                  Drag to place · Scroll/Pinch zoom · Space to pan
                 </div>
 
-                {/* Trace image */}
                 <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
                   {lbl("🗺 Trace Image")}
                   {!bgImage
@@ -727,6 +1028,10 @@ export default function StoreMapBuilder() {
                           <button onClick={()=>setBgImage(null)} style={{
                             padding:"3px 8px",borderRadius:5,cursor:"pointer",background:"transparent",
                             border:`1px solid #f43f5e44`,color:"#f43f5e",fontFamily:MONO,fontSize:"0.75rem"}}>✕</button>
+                        </div>
+                        <div style={{background:"#1a0f0a",border:`1px solid ${GOLD}22`,borderRadius:6,
+                          padding:"5px 8px",fontFamily:MONO,fontSize:"0.68rem",color:GOLD_DIM,lineHeight:1.5}}>
+                          ⚠ Image not saved to browser storage — re-upload after refresh.
                         </div>
                         <div>
                           {fieldLabel("Opacity",`${Math.round(bgOpacity*100)}%`)}
@@ -753,7 +1058,6 @@ export default function StoreMapBuilder() {
                   <input ref={bgFileRef} type="file" accept="image/*" onChange={loadBgImage} style={{display:"none"}} />
                 </div>
 
-                {/* Placed counts */}
                 {groupedItems.length>0&&(
                   <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
                     {lbl("Placed")}
@@ -783,7 +1087,6 @@ export default function StoreMapBuilder() {
                       Select an item<br/>to edit its properties
                     </div>
                   : <>
-                  {/* Title */}
                   <div>
                     <div style={{fontFamily:SERIF,fontSize:"1.15rem",fontWeight:700,color:CREAM,
                       letterSpacing:"-0.01em",marginBottom:2}}>
@@ -796,14 +1099,20 @@ export default function StoreMapBuilder() {
 
                   <div style={{height:1,background:BORDER}}/>
 
-                  {/* Dept */}
+                  {/* Drag hint */}
+                  <div style={{background:"rgba(255,255,255,0.02)",border:`1px solid ${BORDER}`,borderRadius:6,
+                    padding:"6px 10px",fontFamily:MONO,fontSize:"0.68rem",color:MUTED,lineHeight:1.6}}>
+                    <span style={{color:GOLD}}>Tip — </span>Hold & drag to reposition this item
+                  </div>
+
+                  <div style={{height:1,background:BORDER}}/>
+
                   <div>
                     {fieldLabel("Dept / Label")}
                     <input value={selectedItem.dept||""}
                       onChange={e=>updateItem("dept",e.target.value.toUpperCase())} style={inp()} />
                   </div>
 
-                  {/* Number */}
                   {selectedItem.type!=="zone"&&(
                     <div>
                       {fieldLabel("Number")}
@@ -812,7 +1121,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Sections */}
                   {selectedItem.type!=="zone"&&selectedItem.tempZone!=="endcap"&&selectedItem.tempZone!=="action_alley"&&(
                     <div>
                       {fieldLabel("Sections",selectedItem.sections)}
@@ -830,7 +1138,6 @@ export default function StoreMapBuilder() {
                   {selectedItem.type==="shelf"&&selectedItem.tempZone==="endcap"&&
                     infoBox("🔖 Endcap — always exactly 1 pick node at the centre of the pick edge.",GOLD)}
 
-                  {/* Zone type */}
                   {selectedItem.type==="shelf"&&(
                     <div>
                       {lbl("Temperature Zone")}
@@ -843,7 +1150,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Action alley node config */}
                   {selectedItem.type==="shelf"&&selectedItem.tempZone==="action_alley"&&(
                     <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
                       <div>
@@ -869,7 +1175,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Pick side */}
                   {selectedItem.type==="shelf"&&selectedItem.tempZone!=="action_alley"&&(()=>{
                     const isV=selectedItem.h>selectedItem.w, isQ=selectedItem.h===selectedItem.w;
                     const sides=isQ
@@ -889,7 +1194,6 @@ export default function StoreMapBuilder() {
                     );
                   })()}
 
-                  {/* Position */}
                   <div>
                     {lbl("Position & Size")}
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.4rem"}}>
@@ -905,7 +1209,6 @@ export default function StoreMapBuilder() {
                     </div>
                   </div>
 
-                  {/* Link aisle */}
                   {selectedItem.type==="shelf"&&selectedItem.tempZone!=="action_alley"&&(
                     <div>
                       {lbl("Link Aisle")}
@@ -929,7 +1232,6 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
-                  {/* Color */}
                   <div>
                     {fieldLabel("Color")}
                     <input type="color" value={selectedItem.color||GOLD}
@@ -937,7 +1239,6 @@ export default function StoreMapBuilder() {
                       style={{width:32,height:24,border:`1px solid ${BORDER}`,borderRadius:4,cursor:"pointer",background:"none",padding:2}} />
                   </div>
 
-                  {/* Exclude */}
                   {selectedItem.type==="shelf"&&(
                     <div style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
                       <label style={{fontFamily:MONO,fontSize:"0.7rem",color:MUTED,
@@ -950,11 +1251,19 @@ export default function StoreMapBuilder() {
                     </div>
                   )}
 
+                  {/* Unreachable warning for this item */}
+                  {unreachable.length > 0 && selectedItem.type === "shelf" && (() => {
+                    const label = `${selectedItem.dept||""}${selectedItem.num||""}`;
+                    const badCodes = unreachable.filter(c => c.startsWith(label+"-"));
+                    if (!badCodes.length) return null;
+                    return infoBox(`⚠️ ${badCodes.length} node${badCodes.length>1?"s":""} from this shelf were unreachable during last optimization. Check for walls or shelves blocking its pick side.`, "#f97316");
+                  })()}
+
                   <div style={{height:1,background:BORDER}}/>
 
-                  {/* Delete */}
                   <button onClick={()=>{
                     const pid=selectedItem?.linkedId;
+                    pushUndo(items, walls);
                     setItems(p=>p.filter(it=>it.id!==selectedId).map(it=>it.id===pid?{...it,linkedId:undefined}:it));
                     setSelectedId(null);
                   }} style={{
@@ -971,13 +1280,23 @@ export default function StoreMapBuilder() {
             {panelTab==="route"&&(
               <div style={{display:"flex",flexDirection:"column",gap:"0.9rem"}}>
                 {lbl("Pick Path")}
+
+                {/* Unreachable summary */}
+                {unreachable.length > 0 && (
+                  <div style={{background:"#f9731611",border:"1px solid #f9731644",borderRadius:8,
+                    padding:"8px 12px",fontSize:"0.75rem",color:"#f97316",fontFamily:MONO,lineHeight:1.7}}>
+                    <div style={{fontWeight:700,marginBottom:4}}>⚠ {unreachable.length} Unreachable Node{unreachable.length>1?"s":""}</div>
+                    <div style={{color:"#f9731699",marginBottom:6}}>{unreachable.slice(0,8).join(", ")}{unreachable.length>8?" …":""}</div>
+                    <div style={{color:MUTED,fontSize:"0.7rem"}}>Possible causes: walls blocking pick sides, shelves touching edges, or enclosed areas.</div>
+                  </div>
+                )}
+
                 {!simStats
                   ? <div style={{color:MUTED,fontFamily:MONO,fontSize:"0.8rem",
                       lineHeight:1.7,marginTop:"0.5rem"}}>
                       Place shelves, set <span style={{color:GOLD}}>S</span>/<span style={{color:"#f43f5e"}}>E</span> markers, then hit <strong style={{color:CREAM}}>Optimize</strong>.
                     </div>
                   : <>
-                  {/* Stats */}
                   <div style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${BORDER}`,
                     borderRadius:10,padding:"0.75rem 1rem"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
@@ -990,7 +1309,6 @@ export default function StoreMapBuilder() {
                     </div>
                   </div>
 
-                  {/* Search */}
                   <div style={{position:"relative"}}>
                     <input value={routeSearch}
                       onChange={e=>{setRouteSearch(e.target.value);setHighlightedAisleId(null);setHighlightedSecIdx(null);}}
@@ -1003,7 +1321,6 @@ export default function StoreMapBuilder() {
                     )}
                   </div>
 
-                  {/* Aisle order */}
                   {lbl("Aisle Order")}
                   <div ref={aisleListRef}
                     style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.35rem",maxHeight:150,overflowY:"auto"}}>
@@ -1016,6 +1333,7 @@ export default function StoreMapBuilder() {
                       return filtered.map(({shelf,i})=>{
                         const col=(shelf.tempZone&&TEMP_ZONES[shelf.tempZone]?.color)||GOLD;
                         const active=highlightedAisleId===shelf.id;
+                        const hasUnreachable = unreachable.some(c => c.startsWith(`${shelf.dept||""}${shelf.num||""}-`));
                         return(
                           <div key={shelf.id} data-aisleid={shelf.id}
                             onClick={()=>{
@@ -1029,6 +1347,7 @@ export default function StoreMapBuilder() {
                               borderLeft:`2px solid ${active?col:"transparent"}`,transition:"all 0.15s"}}>
                             <span style={{fontFamily:MONO,fontSize:"0.6rem",color:MUTED,width:16,textAlign:"right"}}>{i+1}</span>
                             <span style={{fontFamily:MONO,fontSize:"0.78rem",fontWeight:700,color:active?col:CREAM,flex:1}}>{shelf.dept}{shelf.num}</span>
+                            {hasUnreachable && <span title="Has unreachable nodes" style={{color:"#f97316",fontSize:"0.7rem"}}>⚠</span>}
                             <span style={{fontFamily:MONO,fontSize:"0.62rem",color:MUTED}}>§{shelf.sections}</span>
                           </div>
                         );
@@ -1036,7 +1355,6 @@ export default function StoreMapBuilder() {
                     })()}
                   </div>
 
-                  {/* Section sequence */}
                   {lbl("Section Sequence")}
                   <div ref={sectionListRef}
                     style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.35rem",maxHeight:260,overflowY:"auto"}}>
@@ -1054,6 +1372,7 @@ export default function StoreMapBuilder() {
                         }
                         const isTarget=highlightedSecIdx===i;
                         const isSame=highlightedAisleId&&s.aisle?.id===highlightedAisleId;
+                        const isUnreachable = unreachable.includes(s.code);
                         els.push(
                           <div key={s.code+"_"+i} data-secidx={i}
                             style={{display:"flex",alignItems:"center",gap:"0.3rem",
@@ -1062,7 +1381,9 @@ export default function StoreMapBuilder() {
                               borderLeft:`2px solid ${isTarget?GOLD:isSame?(tz.color+"66"):"transparent"}`}}>
                             <span style={{fontFamily:MONO,fontSize:"0.6rem",color:MUTED,width:20,textAlign:"right"}}>{i+1}</span>
                             <span style={{fontFamily:MONO,fontSize:"0.72rem",flex:1,
-                              color:isTarget?GOLD:tz.color,fontWeight:isTarget?700:400}}>{s.code}</span>
+                              color:isUnreachable?"#f97316":isTarget?GOLD:tz.color,fontWeight:isTarget||isUnreachable?700:400}}>
+                              {s.code}{isUnreachable?" ⚠":""}
+                            </span>
                           </div>
                         );
                       });
@@ -1070,19 +1391,19 @@ export default function StoreMapBuilder() {
                     })()}
                   </div>
 
-                  {/* Export */}
                   <div style={{display:"flex",gap:"0.4rem"}}>
                     <button onClick={()=>{
                       const lines=["PICK PATH — "+new Date().toLocaleString(),"","AISLE ORDER:",""];
                       aisleOrder.forEach((s,i)=>lines.push(String(i+1).padStart(3)+" . "+s.dept+s.num+"  §"+s.sections));
                       lines.push("","SECTION SEQUENCE:","");
                       sectionSeq.forEach((s,i)=>{const tz=TEMP_ZONES[s.tempZone]||TEMP_ZONES.ambient;lines.push(String(i+1).padStart(5)+". "+s.code.padEnd(14)+" ["+tz.label+"]");});
+                      if(unreachable.length){lines.push("","UNREACHABLE NODES:","");unreachable.forEach(c=>lines.push("  ! "+c));}
                       const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/plain"}));a.download="pick-path.txt";a.click();
                     }} style={{flex:1,padding:"0.45rem",borderRadius:6,cursor:"pointer",background:"transparent",
                       border:`1px solid ${GOLD}44`,color:GOLD,fontFamily:MONO,fontSize:"0.72rem",letterSpacing:"0.04em"}}>⬇ TXT</button>
                     <button onClick={()=>{
-                      const rows=[["Step","Code","Shelf","Section","Zone"]];
-                      sectionSeq.forEach((s,i)=>{const tz=TEMP_ZONES[s.tempZone]||TEMP_ZONES.ambient;rows.push([i+1,s.code,(s.aisle?.dept||"")+(s.aisle?.num||""),s.section,tz.label]);});
+                      const rows=[["Step","Code","Shelf","Section","Zone","Unreachable"]];
+                      sectionSeq.forEach((s,i)=>{const tz=TEMP_ZONES[s.tempZone]||TEMP_ZONES.ambient;rows.push([i+1,s.code,(s.aisle?.dept||"")+(s.aisle?.num||""),s.section,tz.label,unreachable.includes(s.code)?"YES":""]);});
                       const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([rows.map(r=>r.join(",")).join("\n")],{type:"text/csv"}));a.download="pick-path.csv";a.click();
                     }} style={{flex:1,padding:"0.45rem",borderRadius:6,cursor:"pointer",background:"transparent",
                       border:`1px solid #4ade8044`,color:"#4ade80",fontFamily:MONO,fontSize:"0.72rem",letterSpacing:"0.04em"}}>⬇ CSV</button>
@@ -1098,7 +1419,6 @@ export default function StoreMapBuilder() {
         {/* ══ CANVAS ══ */}
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
-          {/* Link mode banner */}
           {linkPickMode&&(
             <div style={{flexShrink:0,background:"#2C1810",borderBottom:`1px solid ${GOLD}44`,
               padding:"0.4rem 1rem",display:"flex",alignItems:"center",gap:"0.5rem",
@@ -1112,15 +1432,28 @@ export default function StoreMapBuilder() {
             </div>
           )}
 
-          {/* Map canvas */}
+          {/* Stacked canvas container */}
           <div ref={mapContainerRef}
             style={{flex:1,overflow:"hidden",background:"#0D0805",position:"relative",
-              cursor:isPanningRef.current?"grabbing":linkPickMode?"cell":mode==="draw"?"crosshair":mode==="erase"?"not-allowed":"default"}}
+              cursor: dragItemPreview ? "grabbing"
+                : isPanningRef.current ? "grabbing"
+                : linkPickMode ? "cell"
+                : mode==="draw" ? "crosshair"
+                : mode==="erase" ? "not-allowed"
+                : mode==="select" ? "default"
+                : "default",
+              touchAction:"none"}}
             onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}
             onMouseLeave={onMouseLeave} onContextMenu={e=>e.preventDefault()}>
 
+            {/* Static canvas — items, walls, route */}
             <div style={{position:"absolute",transform:`translate(${pan.x}px,${pan.y}px)`,transformOrigin:"0 0",pointerEvents:"none"}}>
               <canvas ref={canvasRef} style={{display:"block"}} />
+            </div>
+
+            {/* Overlay canvas — preview rect / wall preview */}
+            <div style={{position:"absolute",transform:`translate(${pan.x}px,${pan.y}px)`,transformOrigin:"0 0",pointerEvents:"none"}}>
+              <canvas ref={overlayCanvasRef} style={{display:"block"}} />
             </div>
 
             {/* Optimization overlay */}
@@ -1128,14 +1461,12 @@ export default function StoreMapBuilder() {
               <div style={{position:"absolute",inset:0,zIndex:10,
                 background:"rgba(13,8,5,0.88)",backdropFilter:"blur(8px)",
                 display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"1rem"}}>
-
                 <div style={{fontFamily:SERIF,fontSize:"1.6rem",fontWeight:900,color:CREAM,letterSpacing:"-0.02em"}}>
                   Optimizing Route
                 </div>
                 <div style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD_DIM,letterSpacing:"0.2em",textTransform:"uppercase"}}>
                   NN → 2-opt → Or-opt → 3-opt → Annealing
                 </div>
-
                 {optProgress.total>0
                   ? <>
                     <div style={{width:280,height:3,background:`rgba(212,175,55,0.15)`,borderRadius:2,overflow:"hidden"}}>
@@ -1150,11 +1481,16 @@ export default function StoreMapBuilder() {
                   </>
                   : <div style={{fontFamily:MONO,fontSize:"0.72rem",color:MUTED}}>Building node graph…</div>
                 }
-
-                <button onClick={()=>{workerRef.current?.terminate();workerRef.current=null;setOptimizing(false);}}
-                  style={{marginTop:"0.5rem",padding:"0.45rem 1.25rem",borderRadius:6,cursor:"pointer",
-                    background:"transparent",border:`1px solid #f43f5e44`,
-                    color:"#f43f5e",fontFamily:MONO,fontSize:"0.75rem",letterSpacing:"0.04em"}}>
+                <div style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED+"88"}}>
+                  Timeout in {Math.round(WORKER_TIMEOUT_MS/1000)}s
+                </div>
+                <button onClick={()=>{
+                  workerRef.current?.terminate(); workerRef.current=null;
+                  clearTimeout(workerTimerRef.current); workerTimerRef.current=null;
+                  setOptimizing(false);
+                }} style={{marginTop:"0.5rem",padding:"0.45rem 1.25rem",borderRadius:6,cursor:"pointer",
+                  background:"transparent",border:`1px solid #f43f5e44`,
+                  color:"#f43f5e",fontFamily:MONO,fontSize:"0.75rem",letterSpacing:"0.04em"}}>
                   ✕ Cancel
                 </button>
               </div>
