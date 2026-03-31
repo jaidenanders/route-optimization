@@ -214,57 +214,6 @@ function threeOpt(tour, nodes, startC, startR, endC, endR, dc) {
   return t;
 }
 
-// ── Simulated Annealing ───────────────────────────────────────────────────────
-function simulatedAnnealing(tour, nodes, startC, startR, endC, endR, dc, onProgress, totalNodes, doneBase) {
-  const N=tour.length; if (N<5) return tour;
-  function tourCost(t) {
-    let cost=0, pc=startC, pr=startR;
-    for (const idx of t) { cost+=dc.dist(pc,pr,nodes[idx].c,nodes[idx].r); pc=nodes[idx].c; pr=nodes[idx].r; }
-    return cost+dc.man(pc,pr,endC,endR);
-  }
-  const INIT_TEMP=tourCost(tour)*0.15, COOLING=0.9985;
-  const MAX_ITER=Math.min(80000,N*120), NO_IMPROVE=Math.floor(MAX_ITER*0.2);
-  const PROG=Math.floor(MAX_ITER/25);
-  let cur=tour.slice(), curCost=tourCost(cur), best=cur.slice(), bestCost=curCost;
-  let T=INIT_TEMP, noImp=0;
-
-  function doubleBridge(t) {
-    const n=t.length;
-    const a=1+Math.floor(Math.random()*Math.floor(n/4));
-    const b=Math.floor(n/4)+1+Math.floor(Math.random()*Math.floor(n/4));
-    const c=Math.floor(n/2)+1+Math.floor(Math.random()*Math.floor(n/4));
-    return [...t.slice(0,a),...t.slice(b,c),...t.slice(a,b),...t.slice(c)];
-  }
-  function randSwap(t) {
-    const nt=t.slice(), i=1+Math.floor(Math.random()*(N-2)), j=i+1+Math.floor(Math.random()*(N-i-1));
-    let lo=i,hi=j; while(lo<hi){const tmp=nt[lo];nt[lo]=nt[hi];nt[hi]=tmp;lo++;hi--;} return nt;
-  }
-  function randMove(t,len) {
-    const nt=t.slice(), i=Math.floor(Math.random()*(N-len)), j=Math.floor(Math.random()*(N-len));
-    if (Math.abs(i-j)<len) return nt;
-    const seg=nt.splice(i,len); nt.splice(j<i?j:j,0,...seg); return nt;
-  }
-
-  for (let iter=0;iter<MAX_ITER;iter++) {
-    const r=Math.random();
-    let cand;
-    if      (r<0.45) cand=randSwap(cur);
-    else if (r<0.70) cand=randMove(cur,1);
-    else if (r<0.88) cand=randMove(cur,2);
-    else if (r<0.96) cand=randMove(cur,3);
-    else { cand=doubleBridge(cur); cand=twoOpt(cand,nodes,startC,startR,endC,endR,dc); }
-    const candCost=tourCost(cand), delta=candCost-curCost;
-    if (delta<0||(T>0.1&&Math.random()<Math.exp(-delta/T))) {
-      cur=cand; curCost=candCost;
-      if (curCost<bestCost) { best=cur.slice(); bestCost=curCost; noImp=0; } else noImp++;
-    } else noImp++;
-    if (noImp>=NO_IMPROVE) { cur=best.slice(); curCost=bestCost; T=INIT_TEMP*0.3; noImp=0; }
-    T*=COOLING;
-    if (onProgress&&iter%PROG===0) onProgress(Math.min(doneBase+Math.floor(iter/MAX_ITER*totalNodes*0.08),totalNodes-1),totalNodes);
-  }
-  return best;
-}
-
 // ── Main entry point ──────────────────────────────────────────────────────────
 export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wallEdges, onProgress) {
   const allNodes=buildAllNodes(items);
@@ -283,15 +232,13 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
     const N=passNodes.length;
     const prog=d=>{ if (onProgress) onProgress(Math.min(doneCount+d,totalNodes-1),totalNodes); };
 
-    let tour=nnTour(passNodes,curC,curR,endPt.c,endPt.r,dc);        prog(Math.floor(N*0.20));
-    tour=twoOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);       prog(Math.floor(N*0.40));
-    tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);        prog(Math.floor(N*0.55));
-    tour=threeOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);     prog(Math.floor(N*0.65));
-    tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);        prog(Math.floor(N*0.72));
-    tour=simulatedAnnealing(tour,passNodes,curC,curR,endPt.c,endPt.r,dc,onProgress?prog:null,totalNodes,doneCount);
-                                                                      prog(Math.floor(N*0.88));
-    tour=twoOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);
-    tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);        prog(Math.floor(N*0.95));
+    // Deterministic pipeline: NN → 2-opt → Or-opt → 3-opt → Or-opt → 2-opt
+    let tour=nnTour(passNodes,curC,curR,endPt.c,endPt.r,dc);      prog(Math.floor(N*0.15));
+    tour=twoOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);     prog(Math.floor(N*0.35));
+    tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);      prog(Math.floor(N*0.55));
+    tour=threeOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);   prog(Math.floor(N*0.75));
+    tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);      prog(Math.floor(N*0.88));
+    tour=twoOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);     prog(Math.floor(N*0.97));
 
     for (const idx of tour) {
       const node=passNodes[idx], shelf=items.find(it=>it.id===node.shelfId);
@@ -303,7 +250,7 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
     if (tour.length>0) { const last=passNodes[tour[tour.length-1]]; curC=last.c; curR=last.r; }
   }
 
-  if (onProgress) onProgress(Math.floor(totalNodes*0.97),totalNodes);
+  if (onProgress) onProgress(Math.floor(totalNodes*0.99),totalNodes);
 
   // ── Build full path & detect unreachable nodes ────────────────────────────
   let walkC=startPt.c, walkR=startPt.r;
@@ -312,7 +259,6 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
 
   for (const node of finalTourNodes) {
     const seg=dc.path(walkC,walkR,node.c,node.r);
-    // Detect fallback (unreachable): A* gave up and returned direct [start,end]
     if (isPathFallback(seg, walkC, walkR, node.c, node.r)) {
       unreachableCodes.push(node.code);
     }
