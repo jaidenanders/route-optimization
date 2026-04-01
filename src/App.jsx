@@ -749,194 +749,196 @@ export default function StoreMapBuilder() {
   };
 
   // ── Panel content (shared between desktop aside and mobile bottom sheet) ────
-  const renderPanelContent = () => (
+  const renderPanelContent=()=>(
     <>
-              <div style={{display:"flex",flexDirection:"column",gap:"0.9rem"}}>
-                <div>
-                  {lbl("Item Type")}
-                  <div style={{display:"flex",flexWrap:"wrap",gap:"0.3rem"}}>
-                    {Object.entries(ITEM_TYPES).map(([type,info])=>(
-                      <button key={type} onClick={()=>setDrawTool(t=>({...t,type,color:info.color}))}
-                        style={{flex:1,...chip(drawTool.type===type,info.color)}}>{info.label}</button>
-                    ))}
-                    <button onClick={()=>setDrawTool(t=>({...t,type:"wall",color:"#f43f5e"}))}
-                      style={{flex:1,...chip(drawTool.type==="wall","#f43f5e")}}>Wall</button>
-                  </div>
+      {/* ─── DRAW TAB ─── */}
+      {panelTab==="draw"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:"0.9rem"}}>
+          <div>
+            {lbl("Item Type")}
+            <div style={{display:"flex",flexWrap:"wrap",gap:"0.3rem"}}>
+              {Object.entries(ITEM_TYPES).map(([type,info])=>(
+                <button key={type} onClick={()=>setDrawTool(t=>({...t,type,color:info.color}))}
+                  style={{flex:1,...chip(drawTool.type===type,info.color)}}>{info.label}</button>
+              ))}
+              <button onClick={()=>setDrawTool(t=>({...t,type:"wall",color:"#f43f5e"}))}
+                style={{flex:1,...chip(drawTool.type==="wall","#f43f5e")}}>Wall</button>
+            </div>
+          </div>
+
+          {drawTool.type==="wall"
+            ? infoBox("Click + drag to place a wall. The optimizer never crosses walls.","#f43f5e")
+            : <>
+            {drawTool.type==="shelf"&&<>
+              <div>
+                {lbl("Temperature Zone")}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
+                  {Object.entries(TEMP_ZONES).map(([k,z])=>(
+                    <button key={k} onClick={()=>setDrawTool(t=>({...t,tempZone:k,color:z.color}))}
+                      style={chip(drawTool.tempZone===k,z.color)}>{z.label}</button>
+                  ))}
                 </div>
+              </div>
 
-                {drawTool.type==="wall"
-                  ? infoBox("Click + drag to place a wall. The optimizer never crosses walls.","#f43f5e")
-                  : <>
-                  {drawTool.type==="shelf"&&<>
-                    <div>
-                      {lbl("Temperature Zone")}
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
-                        {Object.entries(TEMP_ZONES).map(([k,z])=>(
-                          <button key={k} onClick={()=>setDrawTool(t=>({...t,tempZone:k,color:z.color}))}
-                            style={chip(drawTool.tempZone===k,z.color)}>{z.label}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {drawTool.tempZone==="action_alley"&&(
-                      <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
-                        <div>
-                          {lbl("Nodes")}
-                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
-                            {[["2","2 Nodes"],["4","4 Nodes"]].map(([v,l])=>(
-                              <button key={v} onClick={()=>setDrawTool(t=>({...t,aaNodes:v}))}
-                                style={chip((drawTool.aaNodes||"2")===v,"#f97316")}>{l}</button>
-                            ))}
-                          </div>
-                        </div>
-                        {(drawTool.aaNodes||"2")==="2"&&(
-                          <div>
-                            {lbl("Pick Sides")}
-                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
-                              {[["lr","◀ L+R ▶"],["tb","▲ T+B ▼"]].map(([v,l])=>(
-                                <button key={v} onClick={()=>setDrawTool(t=>({...t,pickSide:v}))}
-                                  style={{...chip((drawTool.pickSide||"lr")===v,"#f97316"),fontSize:"0.7rem"}}>{l}</button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {drawTool.tempZone==="endcap"&&infoBox("🔖 Endcap — always 1 pick node at centre of edge.",GOLD)}
-
-                    {drawTool.tempZone!=="action_alley"&&drawTool.tempZone!=="endcap"&&(
-                      <div>
-                        {lbl("Pick Side")}
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
-                          {(drawTool.orient===ORIENT.V
-                            ?[["left","◀ Left"],["right","▶ Right"]]
-                            :[["top","▲ Top"],["bottom","▼ Bottom"]]
-                          ).map(([side,l])=>(
-                            <button key={side} onClick={()=>setDrawTool(t=>({...t,pickSide:side}))}
-                              style={chip(drawTool.pickSide===side)}>{l}</button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </>}
-
+              {drawTool.tempZone==="action_alley"&&(
+                <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
                   <div>
-                    {fieldLabel(drawTool.type==="zone"?"Zone Label":"Dept Letter")}
-                    <input value={drawTool.dept}
-                      onChange={e=>setDrawTool(t=>({...t,dept:e.target.value.toUpperCase()}))}
-                      maxLength={4} style={inp()} />
-                  </div>
-
-                  {drawTool.type!=="zone"&&(
-                    <div>
-                      {fieldLabel("Number")}
-                      <input type="number" min={1} value={drawTool.num}
-                        onChange={e=>setDrawTool(t=>({...t,num:parseInt(e.target.value)||1}))} style={inp()} />
-                    </div>
-                  )}
-
-                  {drawTool.type!=="zone"&&drawTool.tempZone!=="endcap"&&drawTool.tempZone!=="action_alley"&&(
-                    <div>
-                      {fieldLabel("Sections",drawTool.sections)}
-                      <div style={{display:"flex",gap:"0.4rem",alignItems:"center"}}>
-                        <input type="range" min={1} max={60} value={Math.min(drawTool.sections,60)}
-                          onChange={e=>setDrawTool(t=>({...t,sections:parseInt(e.target.value)}))}
-                          style={{flex:1,accentColor:GOLD}} />
-                        <input type="number" min={1} max={999} value={drawTool.sections}
-                          onChange={e=>setDrawTool(t=>({...t,sections:parseInt(e.target.value)||1}))}
-                          style={inp({width:48,padding:"3px 6px"})} />
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    {fieldLabel("Color")}
-                    <div style={{display:"flex",gap:"0.35rem",alignItems:"center",flexWrap:"wrap"}}>
-                      <input type="color" value={drawTool.color}
-                        onChange={e=>setDrawTool(t=>({...t,color:e.target.value}))}
-                        style={{width:26,height:24,border:`1px solid ${BORDER}`,borderRadius:4,cursor:"pointer",background:"none",padding:1}} />
-                      {[GOLD,"#c084fc","#fb923c","#4ade80","#f87171","#67e8f9","#60a5fa","#e2e8f0"].map(c=>(
-                        <div key={c} onClick={()=>setDrawTool(t=>({...t,color:c}))}
-                          style={{width:14,height:14,borderRadius:3,background:c,cursor:"pointer",flexShrink:0,
-                            outline:drawTool.color===c?`2px solid ${CREAM}`:"none",outlineOffset:1,transition:"all 0.15s"}} />
+                    {lbl("Nodes")}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
+                      {[["2","2 Nodes"],["4","4 Nodes"]].map(([v,l])=>(
+                        <button key={v} onClick={()=>setDrawTool(t=>({...t,aaNodes:v}))}
+                          style={chip((drawTool.aaNodes||"2")===v,"#f97316")}>{l}</button>
                       ))}
                     </div>
                   </div>
-                  </>
-                }
-
-                <div style={{background:"rgba(255,255,255,0.02)",border:`1px solid ${BORDER}`,borderRadius:8,
-                  padding:"0.6rem 0.75rem",fontFamily:MONO,fontSize:"0.7rem",color:MUTED,lineHeight:1.7}}>
-                  <span style={{color:GOLD}}>Keys — </span>
-                  <span style={{color:CREAM}}>D</span> Draw · <span style={{color:CREAM}}>S</span> Select · <span style={{color:CREAM}}>E</span> Erase<br/>
-                  Drag to place · Scroll/Pinch zoom · Space to pan
-                </div>
-
-                <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
-                  {lbl("🗺 Trace Image")}
-                  {!bgImage
-                    ? <button onClick={()=>bgFileRef.current?.click()} style={{
-                        width:"100%",padding:"0.6rem",borderRadius:8,cursor:"pointer",
-                        background:"transparent",border:`1px dashed ${BORDER}`,
-                        color:MUTED,fontFamily:MONO,fontSize:"0.75rem",
-                      }}>+ Upload floor plan</button>
-                    : <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
-                        <div style={{display:"flex",gap:"0.35rem",alignItems:"center"}}>
-                          <div style={{flex:1,background:"rgba(255,255,255,0.03)",border:`1px solid ${GOLD}44`,
-                            borderRadius:6,padding:"3px 8px",fontSize:"0.75rem",fontFamily:MONO,color:GOLD}}>Image loaded ✓</div>
-                          <button onClick={()=>setBgImage(null)} style={{
-                            padding:"3px 8px",borderRadius:5,cursor:"pointer",background:"transparent",
-                            border:`1px solid #f43f5e44`,color:"#f43f5e",fontFamily:MONO,fontSize:"0.75rem"}}>✕</button>
-                        </div>
-                        <div style={{background:"#1a0f0a",border:`1px solid ${GOLD}22`,borderRadius:6,
-                          padding:"5px 8px",fontFamily:MONO,fontSize:"0.68rem",color:GOLD_DIM,lineHeight:1.5}}>
-                          ⚠ Image not saved to browser storage — re-upload after refresh.
-                        </div>
-                        <div>
-                          {fieldLabel("Opacity",`${Math.round(bgOpacity*100)}%`)}
-                          <input type="range" min={5} max={90} step={5}
-                            value={Math.round(bgOpacity*100)}
-                            onChange={e=>setBgOpacity(parseInt(e.target.value)/100)}
-                            style={{width:"100%",accentColor:GOLD}} />
-                        </div>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.4rem"}}>
-                          {[["X","x",0,COLS],["Y","y",0,ROWS],["W","w",1,COLS*2],["H","h",1,ROWS*2]].map(([l,k,mn,mx2])=>(
-                            <div key={k}>
-                              <label style={{fontFamily:MONO,fontSize:"0.62rem",color:GOLD_DIM,display:"block",marginBottom:2,textTransform:"uppercase"}}>{l}</label>
-                              <input type="number" min={mn} max={mx2} value={bgImage[k]}
-                                onChange={e=>setBgImage(b=>({...b,[k]:parseInt(e.target.value)||0}))}
-                                style={inp({padding:"3px 6px",fontSize:"0.75rem"})} />
-                            </div>
-                          ))}
-                        </div>
-                        <button onClick={()=>bgFileRef.current?.click()} style={{
-                          padding:"0.4rem",borderRadius:6,cursor:"pointer",background:"transparent",
-                          border:`1px dashed ${BORDER}`,color:MUTED,fontFamily:MONO,fontSize:"0.7rem"}}>Replace image</button>
+                  {(drawTool.aaNodes||"2")==="2"&&(
+                    <div>
+                      {lbl("Pick Sides")}
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
+                        {[["lr","◀ L+R ▶"],["tb","▲ T+B ▼"]].map(([v,l])=>(
+                          <button key={v} onClick={()=>setDrawTool(t=>({...t,pickSide:v}))}
+                            style={{...chip((drawTool.pickSide||"lr")===v,"#f97316"),fontSize:"0.7rem"}}>{l}</button>
+                        ))}
                       </div>
-                  }
-                  <input ref={bgFileRef} type="file" accept="image/*" onChange={loadBgImage} style={{display:"none"}} />
+                    </div>
+                  )}
                 </div>
+              )}
 
-                {groupedItems.length>0&&(
-                  <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
-                    {lbl("Placed")}
-                    {groupedItems.map(g=>{
-                      const info=ITEM_TYPES[g.type];
-                      return(
-                        <div key={`${g.type}:${g.dept}`}
-                          style={{display:"flex",alignItems:"center",gap:"0.4rem",marginBottom:"0.35rem"}}>
-                          <div style={{width:7,height:7,borderRadius:2,background:info?.color||GOLD,flexShrink:0}}/>
-                          <span style={{fontFamily:MONO,fontSize:"0.72rem",color:info?.color||GOLD,fontWeight:700,width:22}}>{g.dept}</span>
-                          <span style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED,flex:1}}>{info?.label}</span>
-                          <span style={{fontFamily:MONO,fontSize:"0.72rem",color:info?.color||GOLD,fontWeight:700}}>{g.items.length}</span>
-                        </div>
-                      );
-                    })}
+              {drawTool.tempZone==="endcap"&&infoBox("🔖 Endcap — always 1 pick node at centre of edge.",GOLD)}
+
+              {drawTool.tempZone!=="action_alley"&&drawTool.tempZone!=="endcap"&&(
+                <div>
+                  {lbl("Pick Side")}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem"}}>
+                    {(drawTool.orient===ORIENT.V
+                      ?[["left","◀ Left"],["right","▶ Right"]]
+                      :[["top","▲ Top"],["bottom","▼ Bottom"]]
+                    ).map(([side,l])=>(
+                      <button key={side} onClick={()=>setDrawTool(t=>({...t,pickSide:side}))}
+                        style={chip(drawTool.pickSide===side)}>{l}</button>
+                    ))}
                   </div>
-                )}
+                </div>
+              )}
+            </>}
+
+            <div>
+              {fieldLabel(drawTool.type==="zone"?"Zone Label":"Dept Letter")}
+              <input value={drawTool.dept}
+                onChange={e=>setDrawTool(t=>({...t,dept:e.target.value.toUpperCase()}))}
+                maxLength={4} style={inp()} />
+            </div>
+
+            {drawTool.type!=="zone"&&(
+              <div>
+                {fieldLabel("Number")}
+                <input type="number" min={1} value={drawTool.num}
+                  onChange={e=>setDrawTool(t=>({...t,num:parseInt(e.target.value)||1}))} style={inp()} />
               </div>
             )}
+
+            {drawTool.type!=="zone"&&drawTool.tempZone!=="endcap"&&drawTool.tempZone!=="action_alley"&&(
+              <div>
+                {fieldLabel("Sections",drawTool.sections)}
+                <div style={{display:"flex",gap:"0.4rem",alignItems:"center"}}>
+                  <input type="range" min={1} max={60} value={Math.min(drawTool.sections,60)}
+                    onChange={e=>setDrawTool(t=>({...t,sections:parseInt(e.target.value)}))}
+                    style={{flex:1,accentColor:GOLD}} />
+                  <input type="number" min={1} max={999} value={drawTool.sections}
+                    onChange={e=>setDrawTool(t=>({...t,sections:parseInt(e.target.value)||1}))}
+                    style={inp({width:48,padding:"3px 6px"})} />
+                </div>
+              </div>
+            )}
+
+            <div>
+              {fieldLabel("Color")}
+              <div style={{display:"flex",gap:"0.35rem",alignItems:"center",flexWrap:"wrap"}}>
+                <input type="color" value={drawTool.color}
+                  onChange={e=>setDrawTool(t=>({...t,color:e.target.value}))}
+                  style={{width:26,height:24,border:`1px solid ${BORDER}`,borderRadius:4,cursor:"pointer",background:"none",padding:1}} />
+                {[GOLD,"#c084fc","#fb923c","#4ade80","#f87171","#67e8f9","#60a5fa","#e2e8f0"].map(c=>(
+                  <div key={c} onClick={()=>setDrawTool(t=>({...t,color:c}))}
+                    style={{width:14,height:14,borderRadius:3,background:c,cursor:"pointer",flexShrink:0,
+                      outline:drawTool.color===c?`2px solid ${CREAM}`:"none",outlineOffset:1,transition:"all 0.15s"}} />
+                ))}
+              </div>
+            </div>
+            </>
+          }
+
+          <div style={{background:"rgba(255,255,255,0.02)",border:`1px solid ${BORDER}`,borderRadius:8,
+            padding:"0.6rem 0.75rem",fontFamily:MONO,fontSize:"0.7rem",color:MUTED,lineHeight:1.7}}>
+            <span style={{color:GOLD}}>Keys — </span>
+            <span style={{color:CREAM}}>D</span> Draw · <span style={{color:CREAM}}>S</span> Select · <span style={{color:CREAM}}>E</span> Erase<br/>
+            Drag to place · Scroll/Pinch zoom · Space to pan
+          </div>
+
+          <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
+            {lbl("🗺 Trace Image")}
+            {!bgImage
+              ? <button onClick={()=>bgFileRef.current?.click()} style={{
+                  width:"100%",padding:"0.6rem",borderRadius:8,cursor:"pointer",
+                  background:"transparent",border:`1px dashed ${BORDER}`,
+                  color:MUTED,fontFamily:MONO,fontSize:"0.75rem",
+                }}>+ Upload floor plan</button>
+              : <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
+                  <div style={{display:"flex",gap:"0.35rem",alignItems:"center"}}>
+                    <div style={{flex:1,background:"rgba(255,255,255,0.03)",border:`1px solid ${GOLD}44`,
+                      borderRadius:6,padding:"3px 8px",fontSize:"0.75rem",fontFamily:MONO,color:GOLD}}>Image loaded ✓</div>
+                    <button onClick={()=>setBgImage(null)} style={{
+                      padding:"3px 8px",borderRadius:5,cursor:"pointer",background:"transparent",
+                      border:`1px solid #f43f5e44`,color:"#f43f5e",fontFamily:MONO,fontSize:"0.75rem"}}>✕</button>
+                  </div>
+                  <div style={{background:"#1a0f0a",border:`1px solid ${GOLD}22`,borderRadius:6,
+                    padding:"5px 8px",fontFamily:MONO,fontSize:"0.68rem",color:GOLD_DIM,lineHeight:1.5}}>
+                    ⚠ Image not saved to browser storage — re-upload after refresh.
+                  </div>
+                  <div>
+                    {fieldLabel("Opacity",`${Math.round(bgOpacity*100)}%`)}
+                    <input type="range" min={5} max={90} step={5}
+                      value={Math.round(bgOpacity*100)}
+                      onChange={e=>setBgOpacity(parseInt(e.target.value)/100)}
+                      style={{width:"100%",accentColor:GOLD}} />
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.4rem"}}>
+                    {[["X","x",0,COLS],["Y","y",0,ROWS],["W","w",1,COLS*2],["H","h",1,ROWS*2]].map(([l,k,mn,mx2])=>(
+                      <div key={k}>
+                        <label style={{fontFamily:MONO,fontSize:"0.62rem",color:GOLD_DIM,display:"block",marginBottom:2,textTransform:"uppercase"}}>{l}</label>
+                        <input type="number" min={mn} max={mx2} value={bgImage[k]}
+                          onChange={e=>setBgImage(b=>({...b,[k]:parseInt(e.target.value)||0}))}
+                          style={inp({padding:"3px 6px",fontSize:"0.75rem"})} />
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>bgFileRef.current?.click()} style={{
+                    padding:"0.4rem",borderRadius:6,cursor:"pointer",background:"transparent",
+                    border:`1px dashed ${BORDER}`,color:MUTED,fontFamily:MONO,fontSize:"0.7rem"}}>Replace image</button>
+                </div>
+            }
+            <input ref={bgFileRef} type="file" accept="image/*" onChange={loadBgImage} style={{display:"none"}} />
+          </div>
+
+          {groupedItems.length>0&&(
+            <div style={{borderTop:`1px solid ${BORDER}`,paddingTop:"0.9rem"}}>
+              {lbl("Placed")}
+              {groupedItems.map(g=>{
+                const info=ITEM_TYPES[g.type];
+                return(
+                  <div key={`${g.type}:${g.dept}`}
+                    style={{display:"flex",alignItems:"center",gap:"0.4rem",marginBottom:"0.35rem"}}>
+                    <div style={{width:7,height:7,borderRadius:2,background:info?.color||GOLD,flexShrink:0}}/>
+                    <span style={{fontFamily:MONO,fontSize:"0.72rem",color:info?.color||GOLD,fontWeight:700,width:22}}>{g.dept}</span>
+                    <span style={{fontFamily:MONO,fontSize:"0.65rem",color:MUTED,flex:1}}>{info?.label}</span>
+                    <span style={{fontFamily:MONO,fontSize:"0.72rem",color:info?.color||GOLD,fontWeight:700}}>{g.items.length}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
             {/* ─── EDIT TAB ─── */}
             {panelTab==="edit"&&(
