@@ -140,8 +140,9 @@ function twoOpt(tour, nodes, startC, startR, endC, endR, dc) {
         const manGain=dc.man(ni.c,ni.r,ni1.c,ni1.r)+(nj1?dc.man(nj.c,nj.r,nj1.c,nj1.r):0)
                      -dc.man(ni.c,ni.r,nj.c,nj.r)-(nj1?dc.man(ni1.c,ni1.r,nj1.c,nj1.r):0);
         if (manGain<=0) continue;
-        const cur=dii1+(nj1?dc.dist(nj.c,nj.r,nj1.c,nj1.r):dc.man(nj.c,nj.r,endC,endR));
-        const nw=dc.dist(ni.c,ni.r,nj.c,nj.r)+(nj1?dc.dist(ni1.c,ni1.r,nj1.c,nj1.r):dc.man(ni1.c,ni1.r,endC,endR));
+        // Use cached A* distances for end connection (not Manhattan approximation)
+        const cur=dii1+(nj1?dc.dist(nj.c,nj.r,nj1.c,nj1.r):dc.dist(nj.c,nj.r,endC,endR));
+        const nw=dc.dist(ni.c,ni.r,nj.c,nj.r)+(nj1?dc.dist(ni1.c,ni1.r,nj1.c,nj1.r):dc.dist(ni1.c,ni1.r,endC,endR));
         if (nw<cur-0.5) {
           let lo=i+1,hi=j; while(lo<hi){const tmp=t[lo];t[lo]=t[hi];t[hi]=tmp;lo++;hi--;} improved=true;
         }
@@ -169,8 +170,9 @@ function orOpt(tour, nodes, startC, startR, endC, endR, dc) {
         const removeSave=D(i-1,i)+D(last,after)-D(i-1,after);
         for (let j=0;j<N-1&&!improved;j++) {
           if (j>=i-1&&j<=last) continue;
-          const gain=removeSave-D(j,j+1)+D(j,i)+D(last,j+1);
-          const gainRev=removeSave-D(j,j+1)+D(j,last)+D(i,j+1);
+          // gain = (remove savings) + (broken edge) - (two new insertion edges)
+          const gain=removeSave+D(j,j+1)-D(j,i)-D(last,j+1);
+          const gainRev=removeSave+D(j,j+1)-D(j,last)-D(i,j+1);
           if (gain>0.5||gainRev>0.5) {
             const seg=t.splice(i,segLen);
             if (gainRev>gain) seg.reverse();
@@ -254,6 +256,9 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
   let walkC=startPt.c, walkR=startPt.r;
   const fullPath=[];
   const unreachableCodes=[];
+  // segBoundaries[i] = index in fullPath where the i-th pick-node segment ends.
+  // segBoundaries[0] = 0 (start), then one entry per pick-node, then the end.
+  const segBoundaries=[0];
 
   for (const node of finalTourNodes) {
     const seg=dc.path(walkC,walkR,node.c,node.r);
@@ -261,16 +266,20 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
       unreachableCodes.push(node.code);
     }
     if (fullPath.length===0) fullPath.push(...seg); else fullPath.push(...seg.slice(1));
+    segBoundaries.push(fullPath.length-1);
     totalCost += isPathFallback(seg, walkC, walkR, node.c, node.r) ? 0 : seg.length-1;
     walkC=node.c; walkR=node.r;
   }
   const endSeg=astar(blocked,wallEdges,walkC,walkR,endPt.c,endPt.r);
   if (fullPath.length===0) fullPath.push(...endSeg); else fullPath.push(...endSeg.slice(1));
+  segBoundaries.push(fullPath.length-1);
   totalCost+=endSeg.length-1;
   if (onProgress) onProgress(totalNodes,totalNodes);
 
   return {
     path: fullPath,
+    segBoundaries,
+    pickNodeCoords: finalTourNodes.map(n=>({c:n.c,r:n.r,code:n.code})),
     sectionSeq,
     aisleOrder: [...seenShelves.values()],
     cost: totalCost,

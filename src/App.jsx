@@ -122,6 +122,7 @@ export default function StoreMapBuilder() {
   const [START,        setSTART]        = useState({ c: 10, r: 10 });
   const [END,          setEND]          = useState({ c: 10, r: 12 });
   const [routePath,    setRoutePath]    = useState(null);
+  const [segBoundaries,setSegBoundaries]= useState([]);
   const [sectionSeq,   setSectionSeq]   = useState([]);
   const [aisleOrder,   setAisleOrder]   = useState([]);
   const [pickNodes,    setPickNodes]    = useState([]);
@@ -295,9 +296,9 @@ export default function StoreMapBuilder() {
   useLayoutEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return;
     drawCanvas(canvas, items, walls, zoom, bgImageEl, bgImage, bgOpacity,
-      routePath, showRoute, START, END, pickNodes, selectedId);
+      routePath, showRoute, START, END, pickNodes, selectedId, segBoundaries);
   }, [items, walls, zoom, bgImageEl, bgImage, bgOpacity,
-      routePath, showRoute, START, END, pickNodes, selectedId]);
+      routePath, showRoute, START, END, pickNodes, selectedId, segBoundaries]);
 
   // Overlay layer: preview rect, wall preview, item drag ghost
   useLayoutEffect(() => {
@@ -563,7 +564,7 @@ export default function StoreMapBuilder() {
     if (workerTimerRef.current) { clearTimeout(workerTimerRef.current); workerTimerRef.current=null; }
 
     setOptimizing(true); setOptProgress({done:0,total:0}); setPanelTab("route");
-    setPickNodes([]); setUnreachable([]);
+    setPickNodes([]); setSegBoundaries([]); setUnreachable([]);
 
     const worker = new Worker(new URL("./optimizer.worker.js", import.meta.url), {type:"module"});
     workerRef.current = worker;
@@ -585,6 +586,7 @@ export default function StoreMapBuilder() {
         clearTimeout(workerTimerRef.current);
         workerTimerRef.current = null;
         setRoutePath(data.path);
+        setSegBoundaries(data.segBoundaries||[]);
         setSectionSeq(data.sectionSeq);
         setAisleOrder(data.aisleOrder);
         setPickNodes(data.pickNodeCoords||[]);
@@ -1556,20 +1558,17 @@ export default function StoreMapBuilder() {
                 <div style={{fontFamily:MONO,fontSize:"0.65rem",color:GOLD_DIM,letterSpacing:"0.15em",textTransform:"uppercase",textAlign:"center"}}>
                   NN → 2-opt → Or-opt → 3-opt → Or-opt → 2-opt
                 </div>
-                {optProgress.total>0
-                  ? <>
-                    <div style={{width: isMobile ? "80%" : 280,height:3,background:`rgba(212,175,55,0.15)`,borderRadius:2,overflow:"hidden"}}>
-                      <div style={{height:"100%",borderRadius:2,transition:"width 0.15s ease",
-                        background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
-                        width:`${Math.round(optProgress.done/optProgress.total*100)}%`}} />
-                    </div>
-                    <div style={{fontFamily:MONO,fontSize:"0.72rem",color:MUTED}}>
-                      {Math.round(optProgress.done/optProgress.total*100)}%
-                      &nbsp;·&nbsp;{optProgress.done} / {optProgress.total} sections
-                    </div>
-                  </>
-                  : <div style={{fontFamily:MONO,fontSize:"0.72rem",color:MUTED}}>Building node graph…</div>
-                }
+                <div style={{width: isMobile ? "80%" : 280,height:3,background:`rgba(212,175,55,0.15)`,borderRadius:2,overflow:"hidden"}}>
+                  <div style={{height:"100%",borderRadius:2,transition:"width 0.25s ease",
+                    background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
+                    width:optProgress.total>0?`${Math.round(optProgress.done/optProgress.total*100)}%`:"0%"}} />
+                </div>
+                <div style={{fontFamily:MONO,fontSize:"0.72rem",color:MUTED,height:"1.1em",textAlign:"center"}}>
+                  {optProgress.total>0
+                    ? `${Math.round(optProgress.done/optProgress.total*100)}% · ${optProgress.done} / ${optProgress.total} sections`
+                    : "Building node graph…"
+                  }
+                </div>
                 <button onClick={()=>{
                   workerRef.current?.terminate(); workerRef.current=null;
                   clearTimeout(workerTimerRef.current); workerTimerRef.current=null;
