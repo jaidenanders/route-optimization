@@ -187,48 +187,30 @@ export function drawCanvas(
   }
   walls.forEach(w=>drawWall(w,false,w.id===selectedId));
 
-  // Route path
+  // Route path — dense arrowhead trail, no line
   if (showRoute && routePath && routePath.length > 1) {
     ctx.save();
-    ctx.lineCap="round"; ctx.lineJoin="round";
-
-    // Glow layer
-    ctx.strokeStyle="#d4af37"; ctx.lineWidth=Math.max(3,5*zoom);
-    ctx.globalAlpha=0.28; ctx.shadowColor="#d4af37"; ctx.shadowBlur=14*zoom;
-    ctx.beginPath();
-    ctx.moveTo(routePath[0].c*CZ+CZ/2, routePath[0].r*CZ+CZ/2);
-    for (let i=1;i<routePath.length;i++) ctx.lineTo(routePath[i].c*CZ+CZ/2, routePath[i].r*CZ+CZ/2);
-    ctx.stroke();
-
-    // Crisp line layer
-    ctx.shadowBlur=0; ctx.strokeStyle="#fffef0"; ctx.lineWidth=Math.max(1.5,2.5*zoom); ctx.globalAlpha=0.92;
-    ctx.beginPath();
-    ctx.moveTo(routePath[0].c*CZ+CZ/2, routePath[0].r*CZ+CZ/2);
-    for (let i=1;i<routePath.length;i++) ctx.lineTo(routePath[i].c*CZ+CZ/2, routePath[i].r*CZ+CZ/2);
-    ctx.stroke();
-
-    // Directional arrows — one per pick-node segment
-    if (segBoundaries && segBoundaries.length > 1) {
-      const as = Math.max(4, 8*zoom);
-      ctx.fillStyle="#d4af37"; ctx.globalAlpha=0.95;
-      ctx.shadowColor="#d4af37"; ctx.shadowBlur=6*zoom;
-      for (let si=0; si<segBoundaries.length-1; si++) {
-        const lo=segBoundaries[si], hi=segBoundaries[si+1];
-        if (hi-lo < 2) continue;
-        const mid=Math.floor((lo+hi)/2);
-        const prev=Math.max(lo, mid-1), next=Math.min(hi, mid+1);
-        if (prev===next) continue;
-        const mx=routePath[mid].c*CZ+CZ/2, my=routePath[mid].r*CZ+CZ/2;
-        const angle=Math.atan2(routePath[next].r-routePath[prev].r, routePath[next].c-routePath[prev].c);
-        ctx.beginPath();
-        ctx.moveTo(mx+Math.cos(angle)*as,           my+Math.sin(angle)*as);
-        ctx.lineTo(mx+Math.cos(angle+2.5)*as*0.48,  my+Math.sin(angle+2.5)*as*0.48);
-        ctx.lineTo(mx+Math.cos(angle-2.5)*as*0.48,  my+Math.sin(angle-2.5)*as*0.48);
-        ctx.closePath();
-        ctx.fill();
-      }
+    // One arrow every ~20 px in screen space regardless of zoom
+    const step = Math.max(1, Math.round(20 / CZ));
+    const as   = Math.max(2, CZ * 0.42);
+    ctx.fillStyle  = "#d4af37";
+    ctx.shadowColor = "#d4af37";
+    ctx.shadowBlur  = 3 * zoom;
+    ctx.globalAlpha = 0.85;
+    for (let i = step; i < routePath.length; i += step) {
+      const prev = routePath[i - Math.min(step, i)];
+      const curr = routePath[i];
+      if (prev.c === curr.c && prev.r === curr.r) continue;
+      const mx    = curr.c * CZ + CZ / 2;
+      const my    = curr.r * CZ + CZ / 2;
+      const angle = Math.atan2(curr.r - prev.r, curr.c - prev.c);
+      ctx.beginPath();
+      ctx.moveTo(mx + Math.cos(angle)         * as,        my + Math.sin(angle)         * as);
+      ctx.lineTo(mx + Math.cos(angle + 2.3)   * as * 0.52, my + Math.sin(angle + 2.3)   * as * 0.52);
+      ctx.lineTo(mx + Math.cos(angle - 2.3)   * as * 0.52, my + Math.sin(angle - 2.3)   * as * 0.52);
+      ctx.closePath();
+      ctx.fill();
     }
-
     ctx.restore();
   }
 
