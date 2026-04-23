@@ -214,6 +214,39 @@ function threeOpt(tour, nodes, startC, startR, endC, endR, dc) {
   return t;
 }
 
+// ── Within-shelf monotonic reordering ────────────────────────────────────────
+// Enforces sequential section order within consecutive same-shelf runs.
+// After global optimization, sections of the same shelf may be scrambled by
+// moves that look globally beneficial but create local backtracking. This pass
+// sorts each run by section number and picks the better traversal direction.
+function fixShelfSequences(tour, nodes, startC, startR, endC, endR, dc) {
+  if (tour.length < 2) return tour;
+  const t = tour.slice();
+  let i = 0;
+  while (i < t.length) {
+    const node = nodes[t[i]];
+    if (!node.shelfId || node.tempZone === "action_alley") { i++; continue; }
+    const shelfId = node.shelfId;
+    let j = i + 1;
+    while (j < t.length && nodes[t[j]].shelfId === shelfId) j++;
+    const runLen = j - i;
+    if (runLen > 1) {
+      const run = t.slice(i, j).sort((a, b) => nodes[a].section - nodes[b].section);
+      const rev = run.slice().reverse();
+      const pre = i > 0 ? nodes[t[i - 1]] : { c: startC, r: startR };
+      const nxt = j < t.length ? nodes[t[j]] : { c: endC, r: endR };
+      const fwd = dc.dist(pre.c, pre.r, nodes[run[0]].c, nodes[run[0]].r)
+                + dc.dist(nodes[run[runLen-1]].c, nodes[run[runLen-1]].r, nxt.c, nxt.r);
+      const rvd = dc.dist(pre.c, pre.r, nodes[rev[0]].c, nodes[rev[0]].r)
+                + dc.dist(nodes[rev[runLen-1]].c, nodes[rev[runLen-1]].r, nxt.c, nxt.r);
+      const best = fwd <= rvd ? run : rev;
+      for (let k = 0; k < runLen; k++) t[i + k] = best[k];
+    }
+    i = j;
+  }
+  return t;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wallEdges, onProgress) {
   const allNodes=buildAllNodes(items);
@@ -239,6 +272,7 @@ export function buildNearestNodePath(items, walls, startPt, endPt, blocked, wall
     tour=threeOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);   prog(Math.floor(N*0.75));
     tour=orOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);      prog(Math.floor(N*0.88));
     tour=twoOpt(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);     prog(Math.floor(N*0.97));
+    tour=fixShelfSequences(tour,passNodes,curC,curR,endPt.c,endPt.r,dc);
 
     for (const idx of tour) {
       const node=passNodes[idx], shelf=items.find(it=>it.id===node.shelfId);
